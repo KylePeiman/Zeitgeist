@@ -19,10 +19,10 @@ if (Test-Path $pidsFile) {
     }
     Remove-Item $pidsFile
 } else {
-    Write-Host "No .pids.json found — pipeline may not be running."
+    Write-Host "No .pids.json found - pipeline may not be running."
 }
 
 Write-Host ""
 Write-Host "Stopping Docker..."
-docker compose -f "$dir\docker-compose.yml" down 2>&1 | Out-Null
+docker compose -f "$dir\docker-compose.yml" down -v 2>&1 | Out-Null
 Write-Host "Done."

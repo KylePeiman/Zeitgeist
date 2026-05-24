@@ -7,7 +7,9 @@ New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 
 # ── DOCKER ────────────────────────────────────────────────────
 Write-Host "Starting Docker infrastructure..."
-docker compose -f "$dir\docker-compose.yml" up -d 2>&1 | Out-Null
+# Tear down first to clear any stale Zookeeper ephemeral nodes from a previous run
+docker compose -f "$dir\docker-compose.yml" down -v > "$logsDir\docker.log" 2>&1
+docker compose -f "$dir\docker-compose.yml" up -d >> "$logsDir\docker.log" 2>&1
 
 Write-Host -NoNewline "Waiting for Kafka to be healthy"
 $deadline = (Get-Date).AddSeconds(90)
@@ -33,7 +35,7 @@ $services = @(
     @{ Name = "news";      Exe = "python"; Args = "producers/news_producer.py" },
     @{ Name = "flink";     Exe = "python"; Args = "flink/sentiment_pipeline.py" },
     @{ Name = "scorer";    Exe = "python"; Args = "llm_service/sentiment_scorer.py" },
-    @{ Name = "dashboard"; Exe = "streamlit"; Args = "run dashboard/app.py" },
+    @{ Name = "dashboard"; Exe = "streamlit"; Args = "run dashboard/app.py" }
 )
 
 $pidMap = @{}
