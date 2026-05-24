@@ -16,6 +16,10 @@ data/
 
 # Logs
 *.log
+logs/
+
+# Pipeline state
+.pids.json
 
 # OS
 .DS_Store
