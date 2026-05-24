@@ -40,6 +40,52 @@ foreach ($topic in $topics) {
 Write-Host "Topics ready."
 Write-Host ""
 
+# ── LLAMA.CPP ─────────────────────────────────────────────────
+$pidMap     = @{}
+$llamaModel = if ($env:LLAMA_MODEL_PATH) { $env:LLAMA_MODEL_PATH } else { Join-Path $dir "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" }
+$defaultExe = "C:\Users\Kyle\Desktop\GitHub\llama.cpp\build\bin\Release\llama-server.exe"
+$llamaExe   = if ($env:LLAMA_SERVER_EXE) { $env:LLAMA_SERVER_EXE } elseif (Get-Command llama-server -ErrorAction SilentlyContinue) { "llama-server" } else { $defaultExe }
+
+if (Test-Path $llamaModel) {
+    Write-Host "Starting llama.cpp server..."
+    $llamaProc = Start-Process `
+        -FilePath $llamaExe `
+        -ArgumentList "-m", $llamaModel, "--port", "8080", "-ngl", "99", "-t", "12" `
+        -RedirectStandardOutput (Join-Path $logsDir "llama.log") `
+        -RedirectStandardError  (Join-Path $logsDir "llama.err") `
+        -WindowStyle Hidden `
+        -PassThru
+    $pidMap["llama"] = $llamaProc.Id
+
+    Write-Host -NoNewline "Waiting for model to load"
+    $llamaDeadline = (Get-Date).AddSeconds(300)
+    $llamaReady = $false
+    while ((Get-Date) -lt $llamaDeadline) {
+        try {
+            $r = Invoke-WebRequest -Uri "http://localhost:8080/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+            if ($r.StatusCode -eq 200 -and $r.Content -match '"ok"') { $llamaReady = $true; break }
+        } catch {}
+        Write-Host -NoNewline "."
+        Start-Sleep -Seconds 3
+    }
+    Write-Host ""
+    if ($llamaReady) {
+        # Check if GPU is actually being used
+        $errLog = Join-Path $logsDir "llama.err"
+        if ((Test-Path $errLog) -and (Select-String -Path $errLog -Pattern "no usable GPU" -Quiet)) {
+            Write-Warning "llama.cpp running on CPU only (no CUDA build). Inference will be slow (~30s/req)."
+            Write-Warning "For GPU speed: rebuild llama.cpp with -DGGML_CUDA=ON"
+        } else {
+            Write-Host "llama.cpp is ready (GPU)."
+        }
+    } else {
+        Write-Warning "llama.cpp did not become ready within 300s - scorer will use VADER fallback"
+    }
+} else {
+    Write-Warning "Model not found at: $llamaModel - scorer will use VADER fallback"
+}
+Write-Host ""
+
 # ── PYTHON PROCESSES ──────────────────────────────────────────
 $services = @(
     @{ Name = "reddit";    Exe = "python"; Args = "producers/reddit_producer.py" },
@@ -50,7 +96,6 @@ $services = @(
     @{ Name = "dashboard"; Exe = "streamlit"; Args = "run dashboard/app.py" }
 )
 
-$pidMap = @{}
 foreach ($svc in $services) {
     $log = Join-Path $logsDir "$($svc.Name).log"
     # cmd /c merges stderr into stdout so all output lands in one log file
