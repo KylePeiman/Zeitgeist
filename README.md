@@ -1,4 +1,4 @@
-# zeitgeist 🌐
+# zeitgeist
 
 > Real-time sentiment pipeline that determines the most loved and hated things on the internet.
 
@@ -13,7 +13,7 @@
 **Stack:**
 - **Kafka** — message broker for raw and processed data streams
 - **Apache Flink** — sliding window aggregation and signal normalization
-- **llama.cpp (phi-4-mini)** — local LLM for sentiment scoring
+- **VADER / llama.cpp** — sentiment scoring (VADER by default; llama.cpp if running locally)
 - **SQLite** — persistence layer for sentiment scores
 - **Streamlit** — real-time leaderboard dashboard
 
@@ -21,22 +21,24 @@
 
 ```
 zeitgeist/
-├── docker-compose.yml       # Kafka, Flink, Kafdrop
+├── start.ps1                # Start the full pipeline (one command)
+├── stop.ps1                 # Stop everything and tear down Docker
+├── verify_pipeline.py       # Health check for all components
+├── docker-compose.yml       # Kafka, Zookeeper, Flink, Kafdrop
 ├── .env.example             # Environment variables template
-├── .env                     # Your local config (never commit this)
+├── entities.py              # Seed entity list
 ├── producers/
-│   ├── reddit_producer.py
-│   ├── youtube_producer.py
-│   └── news_producer.py
+│   ├── reddit_producer.py   # Reddit public JSON API (no credentials needed)
+│   ├── youtube_producer.py  # YouTube Data API v3
+│   └── news_producer.py     # Google News RSS + NewsAPI
 ├── flink/
 │   └── sentiment_pipeline.py
 ├── llm_service/
 │   └── sentiment_scorer.py
 ├── dashboard/
 │   └── app.py
-├── data/
-│   └── zeitgeist.db         # SQLite database (auto-created)
-└── entities.py              # Seed entity list
+└── data/
+    └── zeitgeist.db         # SQLite database (auto-created, gitignored)
 ```
 
 ## Setup
@@ -44,66 +46,59 @@ zeitgeist/
 ### 1. Prerequisites
 - Docker Desktop (running)
 - Python 3.10+
-- llama.cpp server running locally with phi-4-mini model
 
 ### 2. Clone and configure
-```bash
-git clone https://github.com/KylePeiman/zeitgeist.git
-cd zeitgeist
+```powershell
+git clone https://github.com/KylePeiman/Zeitgeist.git
+cd Zeitgeist
 cp .env.example .env
-# Edit .env with your API keys
+# Add your YouTube API key to .env (optional — pipeline works without it)
 ```
 
-### 3. Start the infrastructure
-```bash
-docker compose up -d
-```
-
-### 4. Verify everything is healthy
-```bash
-docker compose ps
-```
-
-All services should show `healthy` or `running`.
-
-### 5. Access the UIs
-| Service | URL |
-|---------|-----|
-| Kafdrop (Kafka UI) | http://localhost:9000 |
-| Flink UI | http://localhost:8081 |
-| Streamlit Dashboard | http://localhost:8501 |
-
-### 6. Get API keys
-- **Reddit**: https://www.reddit.com/prefs/apps → create a "script" app
-- **YouTube**: https://console.cloud.google.com → enable YouTube Data API v3
-- **News API**: https://newsapi.org → free tier (100 req/day)
-
-### 7. Install Python dependencies
-```bash
+### 3. Install Python dependencies
+```powershell
 pip install -r requirements.txt
 ```
 
-### 8. Run the producers
-```bash
-python producers/reddit_producer.py
-python producers/youtube_producer.py
-python producers/news_producer.py
+### 4. Start everything
+```powershell
+.\start.ps1
 ```
 
-### 9. Submit the Flink job
-```bash
-python flink/sentiment_pipeline.py
+This single command:
+- Tears down any previous Docker state (prevents Zookeeper stale-node crashes)
+- Starts Kafka, Zookeeper, Flink, and Kafdrop via Docker
+- Waits for Kafka to be healthy
+- Launches all 6 pipeline services silently in the background
+- Logs each service to `logs/<name>.log`
+
+### 5. Verify
+```powershell
+python verify_pipeline.py
 ```
 
-### 10. Start the LLM service
-```bash
-python llm_service/sentiment_scorer.py
+### 6. Stop everything
+```powershell
+.\stop.ps1
 ```
 
-### 11. Launch the dashboard
-```bash
-streamlit run dashboard/app.py
-```
+Kills all pipeline processes and tears down Docker (including volumes).
+
+## API Keys
+
+| Source | Key required? | Where to get one |
+|--------|--------------|-----------------|
+| Reddit | No | Uses public JSON API — no credentials needed |
+| YouTube | Optional | [Google Cloud Console](https://console.cloud.google.com) — enable YouTube Data API v3 |
+| News | Optional | [newsapi.org](https://newsapi.org) free tier (100 req/day); falls back to Google News RSS |
+
+## UIs
+
+| Service | URL |
+|---------|-----|
+| Streamlit Dashboard | http://localhost:8501 |
+| Kafdrop (Kafka UI) | http://localhost:9000 |
+| Flink UI | http://localhost:8081 |
 
 ## Kafka Topics
 
@@ -112,14 +107,8 @@ streamlit run dashboard/app.py
 | `raw.reddit` | Raw Reddit posts and comments |
 | `raw.youtube` | Raw YouTube comments and metadata |
 | `raw.news` | Raw news headlines and articles |
-| `processed.signals` | Normalized signals from Flink, ready for LLM |
+| `processed.signals` | Normalized signals from Flink, ready for scoring |
 
-## Stopping the stack
-```bash
-docker compose down
-```
+## LLM Scoring
 
-To also remove volumes (wipes all Kafka data):
-```bash
-docker compose down -v
-```
+The scorer defaults to VADER for fast local scoring. If you have [llama.cpp](https://github.com/ggerganov/llama.cpp) running locally at `http://localhost:8080` with a compatible model, it will use that instead for richer sentiment analysis.
