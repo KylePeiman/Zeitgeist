@@ -12,7 +12,8 @@ import os
 import re
 import sys
 import sqlite3
-import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from confluent_kafka import Consumer, KafkaError
@@ -31,6 +32,7 @@ INPUT_TOPIC = "processed.signals"
 
 LLAMA_MAX_TOKENS = 500
 LLAMA_TEMPERATURE = 0.3
+SCORER_WORKERS = int(os.getenv("SCORER_WORKERS", 4))
 
 
 # ── DATABASE ──────────────────────────────────────────────────
@@ -252,80 +254,87 @@ def make_consumer() -> Consumer:
     })
 
 
+# ── WORKER FUNCTION ───────────────────────────────────────────
+def process_signal(raw_value: bytes, conn: sqlite3.Connection, db_lock: threading.Lock) -> str:
+    """Parse, score, and persist one signal. Runs in a worker thread."""
+    signal = json.loads(raw_value.decode("utf-8"))
+    entity = signal.get("entity", "")
+    if not entity:
+        return "skipped: no entity"
+
+    llm_result = call_llm(signal, LLAMA_SERVER_URL) or make_fallback_score(signal)
+    method = "VADER" if llm_result.get("reasoning", "").startswith("VADER fallback") else "LLM"
+
+    with db_lock:
+        entity_id = upsert_entity(conn, signal)
+        write_sentiment_score(conn, entity_id, signal, llm_result)
+
+    return (
+        f"[{entity}] {llm_result['sentiment']} "
+        f"(score={llm_result['sentiment_score']:+.2f}, conf={llm_result['confidence']:.2f}) "
+        f"via {method} | mentions={signal.get('mention_count', 0)}"
+    )
+
+
 # ── MAIN LOOP ─────────────────────────────────────────────────
 def run():
-    logger.info(f"Starting LLM Sentiment Scorer")
+    logger.info(f"Starting LLM Sentiment Scorer | workers={SCORER_WORKERS}")
     logger.info(f"Topic: {INPUT_TOPIC} | LLM: {LLAMA_SERVER_URL} | DB: {SQLITE_DB_PATH}")
 
     conn = init_db(SQLITE_DB_PATH)
+    db_lock = threading.Lock()
     consumer = make_consumer()
     consumer.subscribe([INPUT_TOPIC])
 
-    # Check LLM availability
+    # Check LLM availability at startup (informational only — call_llm falls back to VADER per-call)
     try:
         r = requests.get(f"{LLAMA_SERVER_URL}/health", timeout=5)
-        llm_available = r.status_code == 200
-        logger.info("llama.cpp server is reachable" if llm_available else "llama.cpp server returned non-200")
+        if r.status_code == 200:
+            logger.info("llama.cpp server is reachable — LLM scoring enabled")
+        else:
+            logger.warning("llama.cpp server returned non-200 — will use VADER fallback")
     except Exception:
-        llm_available = False
-        logger.warning(f"llama.cpp server not reachable at {LLAMA_SERVER_URL} — using VADER fallback scoring")
+        logger.warning(f"llama.cpp not reachable at {LLAMA_SERVER_URL} — using VADER fallback scoring")
 
-    messages_processed = 0
-    scores_written = 0
+    submitted = 0
+    completed = 0
+    futures: set = set()
 
-    logger.info("Consuming from processed.signals...")
+    logger.info(f"Consuming from {INPUT_TOPIC} with {SCORER_WORKERS} worker threads...")
 
     try:
-        while True:
-            msg = consumer.poll(timeout=1.0)
+        with ThreadPoolExecutor(max_workers=SCORER_WORKERS) as executor:
+            while True:
+                # Reap completed futures and surface any errors
+                done = {f for f in futures if f.done()}
+                for f in done:
+                    try:
+                        logger.info(f.result())
+                    except Exception as e:
+                        logger.error(f"Signal processing failed: {e}")
+                    completed += 1
+                futures -= done
 
-            if msg is None:
-                continue
-
-            if msg.error():
-                if msg.error().code() != KafkaError._PARTITION_EOF:
-                    logger.warning(f"Kafka error: {msg.error()}")
-                continue
-
-            try:
-                signal = json.loads(msg.value().decode("utf-8"))
-                entity = signal.get("entity", "")
-                if not entity:
+                msg = consumer.poll(timeout=1.0)
+                if msg is None:
+                    continue
+                if msg.error():
+                    if msg.error().code() != KafkaError._PARTITION_EOF:
+                        logger.warning(f"Kafka error: {msg.error()}")
                     continue
 
-                messages_processed += 1
+                futures.add(executor.submit(process_signal, msg.value(), conn, db_lock))
+                submitted += 1
 
-                # Get LLM score or fall back to VADER
-                if llm_available:
-                    llm_result = call_llm(signal, LLAMA_SERVER_URL)
-                    if llm_result is None:
-                        llm_result = make_fallback_score(signal)
-                        llm_available = False  # Back off from LLM after failure
-                else:
-                    llm_result = make_fallback_score(signal)
-
-                # Write to DB
-                entity_id = upsert_entity(conn, signal)
-                write_sentiment_score(conn, entity_id, signal, llm_result)
-                scores_written += 1
-
-                logger.info(
-                    f"[{entity}] {llm_result['sentiment']} "
-                    f"(score={llm_result['sentiment_score']:+.2f}, "
-                    f"conf={llm_result['confidence']:.2f}) | "
-                    f"mentions={signal.get('mention_count', 0)} | "
-                    f"total_written={scores_written}"
-                )
-
-            except (json.JSONDecodeError, KeyError) as e:
-                logger.debug(f"Skipping malformed signal: {e}")
+                if submitted % 100 == 0:
+                    logger.info(f"Progress: submitted={submitted} | completed={completed} | in-flight={len(futures)}")
 
     except KeyboardInterrupt:
         logger.info("Scorer stopped by user")
     finally:
         consumer.close()
         conn.close()
-        logger.info(f"Final: processed={messages_processed} | scores_written={scores_written}")
+        logger.info(f"Final: submitted={submitted} | completed={completed}")
 
 
 if __name__ == "__main__":

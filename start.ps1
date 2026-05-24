@@ -11,21 +11,33 @@ Write-Host "Starting Docker infrastructure..."
 docker compose -f "$dir\docker-compose.yml" down -v > "$logsDir\docker.log" 2>&1
 docker compose -f "$dir\docker-compose.yml" up -d >> "$logsDir\docker.log" 2>&1
 
-Write-Host -NoNewline "Waiting for Kafka to be healthy"
-$deadline = (Get-Date).AddSeconds(90)
+Write-Host -NoNewline "Waiting for Kafka to be ready"
+$deadline = (Get-Date).AddSeconds(120)
+$kafkaReady = $false
 while ((Get-Date) -lt $deadline) {
+    # Wait for container health, then verify Kafka actually responds to topic list
     $health = docker inspect --format "{{.State.Health.Status}}" zeitgeist-kafka 2>$null
-    if ($health -eq "healthy") { break }
+    if ($health -eq "healthy") {
+        $topics = docker exec zeitgeist-kafka kafka-topics --bootstrap-server localhost:9092 --list 2>$null
+        if ($LASTEXITCODE -eq 0) { $kafkaReady = $true; break }
+    }
     Write-Host -NoNewline "."
     Start-Sleep -Seconds 2
 }
 Write-Host ""
 
-if ((docker inspect --format "{{.State.Health.Status}}" zeitgeist-kafka 2>$null) -ne "healthy") {
-    Write-Error "Kafka did not become healthy within 90s. Check: docker compose ps"
+if (-not $kafkaReady) {
+    Write-Error "Kafka did not become ready within 120s. Check: docker compose ps"
     exit 1
 }
-Write-Host "Kafka is healthy."
+Write-Host "Kafka is ready."
+
+Write-Host "Creating Kafka topics..."
+$topics = @("raw.reddit", "raw.youtube", "raw.news", "processed.signals")
+foreach ($topic in $topics) {
+    docker exec zeitgeist-kafka kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic $topic --partitions 3 --replication-factor 1 2>&1 | Out-Null
+}
+Write-Host "Topics ready."
 Write-Host ""
 
 # ── PYTHON PROCESSES ──────────────────────────────────────────
