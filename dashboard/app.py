@@ -154,6 +154,14 @@ df = df_raw[
 
 latest = get_latest_per_entity(df)
 
+_MENTION_PRIOR = 10
+if not latest.empty:
+    latest = latest.copy()
+    latest["adjusted_score"] = (
+        latest["sentiment_score"] * latest["mention_count"]
+        / (latest["mention_count"] + _MENTION_PRIOR)
+    )
+
 # ── HEADER ────────────────────────────────────────────────────
 st.title("Zeitgeist — Public Sentiment Dashboard")
 st.caption(f"Auto-refreshes every 30s | Showing last {hours_back}h | {len(df)} data points")
@@ -162,8 +170,8 @@ st.caption(f"Auto-refreshes every 30s | Showing last {hours_back}h | {len(df)} d
 if not latest.empty:
     col1, col2, col3, col4 = st.columns(4)
 
-    most_loved = latest.loc[latest["sentiment_score"].idxmax()]
-    most_hated = latest.loc[latest["sentiment_score"].idxmin()]
+    most_loved = latest.loc[latest["adjusted_score"].idxmax()]
+    most_hated = latest.loc[latest["adjusted_score"].idxmin()]
     avg_score = latest["sentiment_score"].mean()
     pos_pct = (latest["sentiment"] == "positive").mean() * 100
 
@@ -194,8 +202,8 @@ col_love, col_hate = st.columns(2)
 with col_love:
     st.subheader("Most Loved")
     if not latest.empty:
-        top_loved = latest.nlargest(10, "sentiment_score")[
-            ["name", "category", "sentiment_score", "confidence", "mention_count"]
+        top_loved = latest.nlargest(10, "adjusted_score")[
+            ["name", "category", "sentiment_score", "adjusted_score", "confidence", "mention_count"]
         ]
         for _, row in top_loved.iterrows():
             color = sentiment_color(row["sentiment_score"])
@@ -213,8 +221,8 @@ with col_love:
 with col_hate:
     st.subheader("Most Hated")
     if not latest.empty:
-        top_hated = latest.nsmallest(10, "sentiment_score")[
-            ["name", "category", "sentiment_score", "confidence", "mention_count"]
+        top_hated = latest.nsmallest(10, "adjusted_score")[
+            ["name", "category", "sentiment_score", "adjusted_score", "confidence", "mention_count"]
         ]
         for _, row in top_hated.iterrows():
             color = sentiment_color(row["sentiment_score"])
