@@ -33,6 +33,9 @@ INPUT_TOPIC = "processed.signals"
 LLAMA_MAX_TOKENS = 500
 LLAMA_TEMPERATURE = 0.3
 SCORER_WORKERS = int(os.getenv("SCORER_WORKERS", 4))
+LLM_CONCURRENCY = int(os.getenv("LLM_CONCURRENCY", 4))  # match llama-server n_parallel
+
+_llm_semaphore = threading.Semaphore(LLM_CONCURRENCY)
 
 
 # ── DATABASE ──────────────────────────────────────────────────
@@ -178,11 +181,12 @@ def call_llm(signal: dict, llama_url: str) -> dict | None:
         "stop": ["\n\n", "```"],
     }
     try:
-        response = requests.post(
-            f"{llama_url}/completion",
-            json=payload,
-            timeout=30,
-        )
+        with _llm_semaphore:
+            response = requests.post(
+                f"{llama_url}/completion",
+                json=payload,
+                timeout=30,
+            )
         response.raise_for_status()
         data = response.json()
         content = data.get("content", "").strip()

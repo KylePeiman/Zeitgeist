@@ -43,7 +43,7 @@ Write-Host ""
 # ── LLAMA.CPP ─────────────────────────────────────────────────
 $pidMap     = @{}
 $llamaModel = if ($env:LLAMA_MODEL_PATH) { $env:LLAMA_MODEL_PATH } else { Join-Path $dir "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" }
-$defaultExe = "C:\Users\Kyle\Desktop\GitHub\llama.cpp\build\bin\Release\llama-server.exe"
+$defaultExe = "C:\Users\Kyle\Desktop\GitHub\llama.cpp\prebuilt\llama-server.exe"
 $llamaExe   = if ($env:LLAMA_SERVER_EXE) { $env:LLAMA_SERVER_EXE } elseif (Get-Command llama-server -ErrorAction SilentlyContinue) { "llama-server" } else { $defaultExe }
 
 if (Test-Path $llamaModel) {
@@ -62,7 +62,7 @@ if (Test-Path $llamaModel) {
     $llamaReady = $false
     while ((Get-Date) -lt $llamaDeadline) {
         try {
-            $r = Invoke-WebRequest -Uri "http://localhost:8080/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+            $r = Invoke-WebRequest -Uri "http://127.0.0.1:8080/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
             if ($r.StatusCode -eq 200 -and $r.Content -match '"ok"') { $llamaReady = $true; break }
         } catch {}
         Write-Host -NoNewline "."
