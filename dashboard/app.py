@@ -242,8 +242,21 @@ st.divider()
 # ── SENTIMENT OVERVIEW CHART ──────────────────────────────────
 st.subheader("Sentiment Score Overview")
 if not latest.empty:
-    chart_df = latest.sort_values("sentiment_score", ascending=True).head(30)
+    # Sort negative → positive so 0 sits in the visual middle when scrolled there
+    chart_df = latest.sort_values("sentiment_score", ascending=True)
     colors = [sentiment_color(s) for s in chart_df["sentiment_score"]]
+
+    # Determine how many rows fit in the visible window and where neutral sits
+    n = len(chart_df)
+    px_per_row = 28
+    visible_rows = 22  # rows visible without scrolling
+    chart_height = max(500, n * px_per_row)
+
+    # Find the index of the row closest to 0 so we can centre the initial view there
+    neutral_idx = (chart_df["sentiment_score"].abs()).argmin()
+    half = visible_rows // 2
+    y_min = max(0, neutral_idx - half)
+    y_max = min(n - 1, neutral_idx + half)
 
     fig = go.Figure(go.Bar(
         x=chart_df["sentiment_score"],
@@ -252,23 +265,29 @@ if not latest.empty:
         marker_color=colors,
         text=[f"{s:+.2f}" for s in chart_df["sentiment_score"]],
         textposition="outside",
-        hovertemplate="<b>%{y}</b><br>Score: %{x:.3f}<extra></extra>",
+        hovertemplate="<b>%{y}</b><br>Score: %{x:.3f}<br>Mentions: %{customdata}<extra></extra>",
+        customdata=chart_df["mention_count"],
     ))
     fig.update_layout(
         plot_bgcolor="#111111",
         paper_bgcolor="#111111",
         font_color="#e0e0e0",
-        height=600,
+        height=chart_height,
         xaxis=dict(
             range=[-1.1, 1.1],
             zeroline=True,
             zerolinecolor="#555",
+            zerolinewidth=2,
             gridcolor="#2a2a2a",
         ),
-        yaxis=dict(gridcolor="#2a2a2a"),
-        margin=dict(l=10, r=60, t=10, b=10),
+        yaxis=dict(
+            gridcolor="#2a2a2a",
+            range=[y_min - 0.5, y_max + 0.5],  # initially centred on neutral
+        ),
+        margin=dict(l=10, r=70, t=10, b=10),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    with st.container(height=520, border=False):
+        st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
 
