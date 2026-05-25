@@ -239,6 +239,37 @@ with col_hate:
 
 st.divider()
 
+# ── ENTITY SPOTLIGHT ──────────────────────────────────────────
+st.subheader("Entity Spotlight")
+if not latest.empty:
+    spotlight_entity = st.selectbox(
+        "Select an entity to see its reasoning",
+        options=sorted(latest["name"].tolist()),
+        index=None,
+        placeholder="Choose an entity…",
+    )
+    if spotlight_entity:
+        row = latest[latest["name"] == spotlight_entity].iloc[0]
+        entity_rows = df[df["name"] == spotlight_entity].sort_values("timestamp")
+        recent_reasoning = entity_rows.iloc[-1]["reasoning"] if not entity_rows.empty else row.get("reasoning", "")
+        color = sentiment_color(row["sentiment_score"])
+        st.markdown(
+            f"<div style='background:#1a1a1a; border-left: 4px solid {color}; padding: 16px; border-radius: 6px;'>"
+            f"<b style='font-size:1.2em'>{row['name']}</b> "
+            f"<span style='color:#888; font-size:0.85em'>[{row['category']}]</span><br>"
+            f"<span style='color:{color}; font-size:1.1em'>{row['sentiment'].capitalize()}</span> "
+            f"&nbsp;·&nbsp; Score: <b style='color:{color}'>{row['sentiment_score']:+.3f}</b> "
+            f"&nbsp;·&nbsp; Confidence: {row['confidence']:.0%} "
+            f"&nbsp;·&nbsp; Mentions: {int(row['mention_count'])}<br><br>"
+            f"<span style='color:#ccc'>{recent_reasoning}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption("Pick an entity above to see the reasoning behind its sentiment score.")
+
+st.divider()
+
 # ── SENTIMENT OVERVIEW CHART ──────────────────────────────────
 st.subheader("Sentiment Score Overview")
 if not latest.empty:
@@ -385,7 +416,7 @@ st.subheader("All Entities — Latest Scores")
 if not latest.empty:
     display_df = latest[[
         "name", "category", "entity_type", "sentiment", "sentiment_score",
-        "confidence", "mention_count", "engagement_score", "source", "timestamp"
+        "confidence", "mention_count", "engagement_score", "source", "timestamp", "reasoning"
     ]].copy()
 
     display_df["timestamp"] = display_df["timestamp"].dt.strftime("%H:%M:%S UTC")

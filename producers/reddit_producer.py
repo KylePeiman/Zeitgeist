@@ -147,8 +147,7 @@ def build_post_message(post_data: dict, subreddit: str) -> dict | None:
     full_text = f"{title} {selftext}".strip()
 
     entities = extract_entities(full_text)
-    if not entities:
-        return None  # Skip posts with no entity matches
+    # Publish even with no seed-entity match — Flink NER handles discovery
 
     return {
         "source": "reddit",
@@ -176,8 +175,7 @@ def build_comment_message(comment_data: dict, subreddit: str, post_id: str) -> d
         return None
 
     entities = extract_entities(body)
-    if not entities:
-        return None
+    # Publish even with no seed-entity match — Flink NER handles discovery
 
     return {
         "source": "reddit",

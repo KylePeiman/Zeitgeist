@@ -26,6 +26,7 @@ import requests
 from loguru import logger
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from entities import ALIAS_MAP
 
 load_dotenv()
 
@@ -265,6 +266,11 @@ def run():
     signals_emitted = 0
     last_slide_ts = time.time()
 
+    # NER entity promotion: track how many messages mention each discovered entity.
+    # An entity enters the buffer only after NER_PROMOTION_THRESHOLD occurrences.
+    _ner_candidate_counts: dict[str, int] = {}
+    NER_PROMOTION_THRESHOLD = 10
+
     logger.info("Pipeline running — consuming messages and computing sliding windows")
 
     try:
@@ -282,6 +288,30 @@ def run():
 
                     for entity in entities:
                         add_to_buffer(buffer, entity, source, data, now)
+
+                    # NER discovery for messages with no seed-entity match
+                    if not entities and NLP_AVAILABLE:
+                        raw_text = (
+                            (data.get("text") or "")
+                            + " "
+                            + (data.get("title") or "")
+                        ).strip()
+                        for hit in discover_entities_ner(raw_text):
+                            name = hit["name"]
+                            canonical = ALIAS_MAP.get(name.lower())
+                            if canonical:
+                                # Already a seed entity — buffer directly under canonical name
+                                add_to_buffer(buffer, canonical, source, data, now)
+                            else:
+                                # New entity — apply promotion threshold to suppress noise
+                                _ner_candidate_counts[name] = _ner_candidate_counts.get(name, 0) + 1
+                                if _ner_candidate_counts[name] >= NER_PROMOTION_THRESHOLD:
+                                    msg_with_meta = dict(data)
+                                    msg_with_meta.setdefault("entity_metadata", {})[name] = {
+                                        "category": "discovered",
+                                        "entity_type": hit["entity_type"],
+                                    }
+                                    add_to_buffer(buffer, name, source, msg_with_meta, now)
 
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
                     logger.debug(f"Skipping malformed message: {e}")
