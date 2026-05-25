@@ -79,7 +79,7 @@ def load_all_data(db_path: str) -> pd.DataFrame:
     conn.close()
     if df.empty:
         return df
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
     return df
 
 
