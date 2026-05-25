@@ -296,15 +296,17 @@ st.subheader("Sentiment Trend Over Time")
 
 if not df.empty:
     entity_options = sorted(df["name"].unique().tolist())
-    default_entities = entity_options[:5] if len(entity_options) >= 5 else entity_options
 
     selected_entities = st.multiselect(
         "Select entities to compare",
         options=entity_options,
-        default=default_entities,
+        default=[],
+        placeholder="Search and select entities…",
     )
 
-    if selected_entities:
+    if not selected_entities:
+        st.caption("Select one or more entities above to plot their sentiment over time.")
+    else:
         trend_df = df[df["name"].isin(selected_entities)].copy()
         trend_df = trend_df.sort_values("timestamp")
 
@@ -319,14 +321,37 @@ if not df.empty:
                 y=edf["sentiment_score"],
                 mode="lines+markers",
                 name=entity,
-                line=dict(width=2),
-                marker=dict(size=5),
+                line=dict(width=2, color=color),
+                marker=dict(size=4),
                 hovertemplate=(
                     f"<b>{entity}</b><br>"
                     "Score: %{y:.3f}<br>"
                     "Time: %{x}<extra></extra>"
                 ),
             ))
+
+        # Y-axis range control
+        y_vals = trend_df["sentiment_score"]
+        y_auto_pad = max(0.05, (y_vals.max() - y_vals.min()) * 0.2)
+        y_auto = [
+            max(-1.1, y_vals.min() - y_auto_pad),
+            min(1.1, y_vals.max() + y_auto_pad),
+        ]
+
+        y_range_choice = st.select_slider(
+            "Y-axis range",
+            options=["Auto (zoom)", "±0.25", "±0.50", "±0.75", "Full (±1.0)"],
+            value="Auto (zoom)",
+            help="Zoom in to see finer trend detail, or zoom out for full scale.",
+        )
+        y_range_map = {
+            "Auto (zoom)": y_auto,
+            "±0.25": [-0.25, 0.25],
+            "±0.50": [-0.50, 0.50],
+            "±0.75": [-0.75, 0.75],
+            "Full (±1.0)": [-1.1, 1.1],
+        }
+        y_range = y_range_map[y_range_choice]
 
         fig2.add_hline(y=0, line_dash="dash", line_color="#555", line_width=1)
         fig2.add_hrect(y0=0.2, y1=1.0, fillcolor="#00c853", opacity=0.05, line_width=0)
@@ -336,16 +361,19 @@ if not df.empty:
             plot_bgcolor="#111111",
             paper_bgcolor="#111111",
             font_color="#e0e0e0",
-            height=400,
-            xaxis=dict(gridcolor="#2a2a2a"),
+            height=500,
+            xaxis=dict(
+                gridcolor="#2a2a2a",
+                rangeslider=dict(visible=True, thickness=0.06),
+            ),
             yaxis=dict(
-                range=[-1.1, 1.1],
+                range=y_range,
                 gridcolor="#2a2a2a",
                 zeroline=True,
                 zerolinecolor="#555",
             ),
             legend=dict(bgcolor="#1a1a1a"),
-            margin=dict(l=10, r=10, t=10, b=10),
+            margin=dict(l=10, r=10, t=10, b=40),
         )
         st.plotly_chart(fig2, use_container_width=True)
 
