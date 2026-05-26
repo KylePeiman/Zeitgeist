@@ -250,7 +250,7 @@ def make_consumer() -> Consumer:
     return Consumer({
         "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
         "group.id": "zeitgeist-llm-scorer",
-        "auto.offset.reset": "latest",
+        "auto.offset.reset": "earliest",
         "enable.auto.commit": True,
     })
 
