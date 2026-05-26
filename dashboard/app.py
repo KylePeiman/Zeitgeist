@@ -129,7 +129,22 @@ with st.sidebar:
         default=sources,
     )
 
-    hours_back = st.slider("Time window (hours)", min_value=1, max_value=48, value=24)
+    # Compute earliest available data for the slider range
+    earliest_ts = df_raw["timestamp"].min()
+    max_hours = max(48, int((pd.Timestamp.now(tz="UTC") - earliest_ts).total_seconds() / 3600) + 1)
+
+    time_options = [1, 6, 12, 24, 48, 168, 720]  # 1h … 30d
+    # Add the full range if it goes beyond 30d
+    if max_hours > 720:
+        time_options.append(max_hours)
+    time_labels = {1: "1h", 6: "6h", 12: "12h", 24: "24h", 48: "2d", 168: "7d", 720: "30d",
+                   max_hours: "All"}
+    hours_back = st.select_slider(
+        "Time window",
+        options=time_options,
+        value=720,
+        format_func=lambda h: time_labels.get(h, f"{h}h"),
+    )
 
     st.divider()
     cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=hours_back)
