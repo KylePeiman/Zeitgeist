@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zeitgeist — Public Sentiment Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0e0e0e;
+      color: #e0e0e0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    header {
+      padding: 24px 32px 0;
+      border-bottom: 1px solid #1e1e1e;
+      padding-bottom: 16px;
+    }
+    header h1 { font-size: 1.7rem; color: #fff; font-weight: 700; }
+    header .subtitle { color: #666; font-size: 0.85rem; margin-top: 4px; }
+
+    main { padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .metric-card {
+      background: #1a1a1a;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .metric-card .label { color: #888; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .metric-card .value { font-size: 1.5rem; font-weight: 700; color: #fff; margin-top: 4px; }
+    .metric-card .delta { font-size: 0.85rem; margin-top: 2px; }
+
+    .divider { border: none; border-top: 1px solid #1e1e1e; margin: 24px 0; }
+
+    .section-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: #e0e0e0;
+      margin-bottom: 14px;
+    }
+
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+
+    .leaderboard-list { list-style: none; }
+    .leaderboard-list li {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 6px 0;
+      border-bottom: 1px solid #1e1e1e;
+      font-size: 0.9rem;
+    }
+    .leaderboard-list li:last-child { border-bottom: none; }
+    .lb-dot { font-size: 0.7rem; }
+    .lb-name { font-weight: 600; flex: 1; }
+    .lb-score { font-weight: 700; font-size: 0.95rem; }
+    .lb-meta { color: #555; font-size: 0.78rem; }
+
+    #chart-overview, #chart-trend { width: 100%; margin-bottom: 24px; }
+
+    /* Trend entity selector */
+    .trend-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .trend-controls input[type=text] {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      color: #e0e0e0;
+      padding: 6px 12px;
+      font-size: 0.85rem;
+      width: 240px;
+      outline: none;
+    }
+    .trend-controls input[type=text]:focus { border-color: #555; }
+    #entity-suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .suggestion-chip {
+      background: #1e1e1e;
+      border: 1px solid #2a2a2a;
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 0.78rem;
+      cursor: pointer;
+      color: #bbb;
+      transition: background 0.15s;
+    }
+    .suggestion-chip:hover { background: #2a2a2a; color: #fff; }
+    .selected-entities {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .selected-chip {
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 0.78rem;
+      cursor: pointer;
+      color: #fff;
+      background: #2a2a2a;
+      border: 1px solid #444;
+    }
+    .selected-chip::after { content: " ✕"; opacity: 0.5; }
+    .selected-chip:hover::after { opacity: 1; }
+
+    /* Table */
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 8px;
+      border: 1px solid #1e1e1e;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    thead th {
+      background: #161616;
+      color: #888;
+      text-align: left;
+      padding: 10px 12px;
+      font-weight: 500;
+      text-transform: uppercase;
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      position: sticky;
+      top: 0;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    thead th:hover { color: #ccc; }
+    thead th .sort-arrow { opacity: 0.4; margin-left: 4px; }
+    thead th.sorted-asc .sort-arrow::after { content: "▲"; opacity: 1; }
+    thead th.sorted-desc .sort-arrow::after { content: "▼"; opacity: 1; }
+    thead th:not(.sorted-asc):not(.sorted-desc) .sort-arrow::after { content: "⇅"; }
+    tbody tr { border-top: 1px solid #1a1a1a; }
+    tbody tr:hover { background: #141414; }
+    tbody td { padding: 8px 12px; color: #ccc; }
+    td.name-col { font-weight: 600; color: #e0e0e0; }
+    td.score-col { font-weight: 700; font-size: 0.9rem; }
+    td.reasoning-col {
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #666;
+      font-size: 0.78rem;
+    }
+
+    .pos { color: #00c853; }
+    .neg { color: #ff1744; }
+    .neu { color: #9e9e9e; }
+
+    footer {
+      text-align: center;
+      color: #333;
+      font-size: 0.75rem;
+      padding: 24px 32px;
+    }
+    footer a { color: #444; text-decoration: none; }
+    footer a:hover { color: #666; }
+
+    @media (max-width: 800px) {
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .two-col  { grid-template-columns: 1fr; }
+      main { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Zeitgeist</h1>
+  <div class="subtitle" id="subtitle">Loading…</div>
+</header>
+
+<main>
+  <!-- Metrics row -->
+  <div class="metrics" id="metrics"></div>
+  <hr class="divider">
+
+  <!-- Leaderboards -->
+  <div class="two-col">
+    <div>
+      <div class="section-title">Most Loved</div>
+      <ul class="leaderboard-list" id="lb-loved"></ul>
+    </div>
+    <div>
+      <div class="section-title">Most Hated</div>
+      <ul class="leaderboard-list" id="lb-hated"></ul>
+    </div>
+  </div>
+  <hr class="divider">
+
+  <!-- Overview chart -->
+  <div class="section-title">Sentiment Score Overview</div>
+  <div id="chart-overview"></div>
+  <hr class="divider">
+
+  <!-- Trend chart -->
+  <div class="section-title">Sentiment Trend Over Time</div>
+  <div class="trend-controls">
+    <input type="text" id="entity-search" placeholder="Search entities…" autocomplete="off">
+    <div id="entity-suggestions"></div>
+  </div>
+  <div class="selected-entities" id="selected-entities"></div>
+  <div id="chart-trend" style="display:none"></div>
+  <div id="trend-placeholder" style="color:#555; font-size:0.85rem; margin-bottom:24px;">
+    Search and select one or more entities above to plot their sentiment trend.
+  </div>
+  <hr class="divider">
+
+  <!-- Table -->
+  <div class="section-title">All Entities — Latest Scores</div>
+  <div class="table-wrap">
+    <table id="entity-table">
+      <thead>
+        <tr>
+          <th data-col="name">Entity <span class="sort-arrow"></span></th>
+          <th data-col="category">Category <span class="sort-arrow"></span></th>
+          <th data-col="entity_type">Type <span class="sort-arrow"></span></th>
+          <th data-col="sentiment">Sentiment <span class="sort-arrow"></span></th>
+          <th data-col="sentiment_score" class="sorted-desc">Score <span class="sort-arrow"></span></th>
+          <th data-col="confidence">Confidence <span class="sort-arrow"></span></th>
+          <th data-col="mention_count">Mentions <span class="sort-arrow"></span></th>
+          <th data-col="source">Source <span class="sort-arrow"></span></th>
+          <th data-col="timestamp">Last Seen <span class="sort-arrow"></span></th>
+          <th data-col="reasoning">Reasoning</th>
+        </tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+  </div>
+</main>
+
+<footer>
+  <p>
+    <a href="https://github.com/KylePeiman/Zeitgeist" target="_blank">GitHub</a>
+    &nbsp;·&nbsp; Snapshot updated by committing <code>docs/data.json</code>
+  </p>
+</footer>
+
+<script>
+const COLOR = { pos: "#00c853", neg: "#ff1744", neu: "#9e9e9e" };
+function scoreColor(s) { return s > 0.2 ? COLOR.pos : s < -0.2 ? COLOR.neg : COLOR.neu; }
+function scoreClass(s) { return s > 0.2 ? "pos" : s < -0.2 ? "neg" : "neu"; }
+function fmt(n, d=3) { return (n >= 0 ? "+" : "") + n.toFixed(d); }
+function pct(n) { return (n * 100).toFixed(0) + "%"; }
+
+let DATA = null;
+let selectedEntities = [];
+let sortCol = "sentiment_score";
+let sortDir = -1;
+
+fetch("data.json")
+  .then(r => r.json())
+  .then(d => { DATA = d; render(); })
+  .catch(() => {
+    document.getElementById("subtitle").textContent = "Failed to load data.json";
+  });
+
+function render() {
+  const d = DATA;
+  const latest = d.latest;
+
+  // Subtitle
+  document.getElementById("subtitle").textContent =
+    `Snapshot from ${d.generated_at.replace("T"," ").replace("Z"," UTC")} · ${d.entity_count} entities tracked`;
+
+  // Adjusted score
+  latest.forEach(e => {
+    if (e.adjusted_score === undefined) {
+      e.adjusted_score = e.sentiment_score * e.mention_count / (e.mention_count + 10);
+    }
+  });
+
+  // Metrics
+  const sorted = [...latest].sort((a, b) => b.adjusted_score - a.adjusted_score);
+  const loved = sorted[0];
+  const hated = sorted[sorted.length - 1];
+  const avg = latest.reduce((s, e) => s + e.sentiment_score, 0) / latest.length;
+  const posPct = latest.filter(e => e.sentiment === "positive").length / latest.length * 100;
+
+  document.getElementById("metrics").innerHTML = [
+    { label: "Most Loved", value: loved.name, delta: fmt(loved.sentiment_score, 2), cls: "pos" },
+    { label: "Most Hated", value: hated.name, delta: fmt(hated.sentiment_score, 2), cls: "neg" },
+    { label: "Avg Sentiment", value: fmt(avg, 3), delta: "", cls: scoreClass(avg) },
+    { label: "% Positive", value: posPct.toFixed(0) + "%", delta: "", cls: "pos" },
+  ].map(m => `
+    <div class="metric-card">
+      <div class="label">${m.label}</div>
+      <div class="value">${m.value}</div>
+      ${m.delta ? `<div class="delta ${m.cls}">${m.delta}</div>` : ""}
+    </div>
+  `).join("");
+
+  // Leaderboards
+  function lbItem(e) {
+    const c = scoreColor(e.sentiment_score);
+    return `<li>
+      <span class="lb-dot" style="color:${c}">●</span>
+      <span class="lb-name">${e.name}</span>
+      <span class="lb-score" style="color:${c}">${fmt(e.sentiment_score, 3)}</span>
+      <span class="lb-meta">[${e.category}] ${e.mention_count} mentions</span>
+    </li>`;
+  }
+  document.getElementById("lb-loved").innerHTML =
+    sorted.slice(0, 10).map(lbItem).join("");
+  document.getElementById("lb-hated").innerHTML =
+    [...sorted].reverse().slice(0, 10).map(lbItem).join("");
+
+  // Overview chart
+  const chartData = [...latest].sort((a, b) => a.sentiment_score - b.sentiment_score);
+  const colors = chartData.map(e => scoreColor(e.sentiment_score));
+  const n = chartData.length;
+  const pxPerRow = 28;
+  const visRows = 22;
+  const chartH = Math.max(500, n * pxPerRow);
+  const neutralIdx = chartData.reduce((best, e, i) =>
+    Math.abs(e.sentiment_score) < Math.abs(chartData[best].sentiment_score) ? i : best, 0);
+  const half = Math.floor(visRows / 2);
+  const yMin = Math.max(0, neutralIdx - half) - 0.5;
+  const yMax = Math.min(n - 1, neutralIdx + half) + 0.5;
+
+  Plotly.newPlot("chart-overview", [{
+    type: "bar",
+    orientation: "h",
+    x: chartData.map(e => e.sentiment_score),
+    y: chartData.map(e => e.name),
+    marker: { color: colors },
+    text: chartData.map(e => fmt(e.sentiment_score, 2)),
+    textposition: "outside",
+    customdata: chartData.map(e => e.mention_count),
+    hovertemplate: "<b>%{y}</b><br>Score: %{x:.3f}<br>Mentions: %{customdata}<extra></extra>",
+  }], {
+    paper_bgcolor: "#111",
+    plot_bgcolor: "#111",
+    font: { color: "#e0e0e0" },
+    height: chartH,
+    margin: { l: 10, r: 70, t: 10, b: 10 },
+    xaxis: { range: [-1.1, 1.1], zeroline: true, zerolinecolor: "#555", zerolinewidth: 2, gridcolor: "#2a2a2a" },
+    yaxis: { gridcolor: "#2a2a2a", range: [yMin, yMax] },
+  }, { responsive: true, displayModeBar: false });
+
+  // Entity search / trend
+  setupTrend(d);
+
+  // Table
+  renderTable();
+}
+
+function setupTrend(d) {
+  const allNames = d.latest.map(e => e.name).sort();
+  const searchInput = document.getElementById("entity-search");
+  const suggestionsEl = document.getElementById("entity-suggestions");
+
+  function updateSuggestions() {
+    const q = searchInput.value.trim().toLowerCase();
+    const matches = q.length === 0
+      ? []
+      : allNames.filter(n => n.toLowerCase().includes(q) && !selectedEntities.includes(n)).slice(0, 8);
+    suggestionsEl.innerHTML = matches.map(n =>
+      `<span class="suggestion-chip" data-name="${n}">${n}</span>`
+    ).join("");
+    suggestionsEl.querySelectorAll(".suggestion-chip").forEach(chip =>
+      chip.addEventListener("click", () => {
+        selectEntity(chip.dataset.name);
+        searchInput.value = "";
+        updateSuggestions();
+      })
+    );
+  }
+
+  searchInput.addEventListener("input", updateSuggestions);
+  searchInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      const first = suggestionsEl.querySelector(".suggestion-chip");
+      if (first) { selectEntity(first.dataset.name); searchInput.value = ""; updateSuggestions(); }
+    }
+    if (e.key === "Escape") { searchInput.value = ""; updateSuggestions(); }
+  });
+}
+
+function selectEntity(name) {
+  if (selectedEntities.includes(name)) return;
+  selectedEntities.push(name);
+  renderSelectedChips();
+  renderTrend();
+}
+
+function deselectEntity(name) {
+  selectedEntities = selectedEntities.filter(n => n !== name);
+  renderSelectedChips();
+  renderTrend();
+}
+
+function renderSelectedChips() {
+  const el = document.getElementById("selected-entities");
+  el.innerHTML = selectedEntities.map(n => {
+    const e = DATA.latest.find(x => x.name === n);
+    const c = e ? scoreColor(e.sentiment_score) : "#9e9e9e";
+    return `<span class="selected-chip" style="border-color:${c};color:${c}" data-name="${n}">${n}</span>`;
+  }).join("");
+  el.querySelectorAll(".selected-chip").forEach(chip =>
+    chip.addEventListener("click", () => deselectEntity(chip.dataset.name))
+  );
+}
+
+function renderTrend() {
+  const trendEl = document.getElementById("chart-trend");
+  const placeholder = document.getElementById("trend-placeholder");
+
+  if (selectedEntities.length === 0) {
+    trendEl.style.display = "none";
+    placeholder.style.display = "block";
+    return;
+  }
+
+  trendEl.style.display = "block";
+  placeholder.style.display = "none";
+
+  const traces = selectedEntities.map(name => {
+    const pts = DATA.history.filter(h => h.name === name).sort((a, b) => a.day < b.day ? -1 : 1);
+    const e = DATA.latest.find(x => x.name === name);
+    const color = e ? scoreColor(e.sentiment_score) : "#9e9e9e";
+    return {
+      type: "scatter",
+      mode: "lines+markers",
+      name,
+      x: pts.map(p => p.day),
+      y: pts.map(p => p.sentiment_score),
+      line: { width: 2, color },
+      marker: { size: 4 },
+      hovertemplate: `<b>${name}</b><br>Score: %{y:.3f}<br>Date: %{x}<extra></extra>`,
+    };
+  });
+
+  Plotly.react("chart-trend", traces, {
+    paper_bgcolor: "#111",
+    plot_bgcolor: "#111",
+    font: { color: "#e0e0e0" },
+    height: 420,
+    margin: { l: 10, r: 10, t: 10, b: 40 },
+    xaxis: { gridcolor: "#2a2a2a", rangeslider: { visible: true, thickness: 0.06 } },
+    yaxis: {
+      gridcolor: "#2a2a2a", zeroline: true, zerolinecolor: "#555",
+      range: [-1.1, 1.1],
+    },
+    legend: { bgcolor: "#1a1a1a" },
+    shapes: [
+      { type: "line", x0: 0, x1: 1, xref: "paper", y0: 0, y1: 0, line: { color: "#555", dash: "dash", width: 1 } },
+      { type: "rect", x0: 0, x1: 1, xref: "paper", y0: 0.2, y1: 1, fillcolor: "#00c853", opacity: 0.05, line: { width: 0 } },
+      { type: "rect", x0: 0, x1: 1, xref: "paper", y0: -1, y1: -0.2, fillcolor: "#ff1744", opacity: 0.05, line: { width: 0 } },
+    ],
+  }, { responsive: true, displayModeBar: false });
+}
+
+function renderTable() {
+  const rows = [...DATA.latest];
+  rows.sort((a, b) => {
+    const av = a[sortCol] ?? "", bv = b[sortCol] ?? "";
+    if (typeof av === "number") return (bv - av) * sortDir;
+    return av < bv ? -sortDir : av > bv ? sortDir : 0;
+  });
+
+  document.getElementById("table-body").innerHTML = rows.map(e => {
+    const sc = scoreColor(e.sentiment_score);
+    const ts = e.timestamp ? e.timestamp.replace("T", " ").replace("Z", " UTC").slice(0, 19) + " UTC" : "";
+    return `<tr>
+      <td class="name-col">${e.name}</td>
+      <td>${e.category}</td>
+      <td>${e.entity_type}</td>
+      <td class="${scoreClass(e.sentiment_score)}">${(e.sentiment||"").charAt(0).toUpperCase() + (e.sentiment||"").slice(1)}</td>
+      <td class="score-col" style="color:${sc}">${fmt(e.sentiment_score, 3)}</td>
+      <td>${pct(e.confidence)}</td>
+      <td>${e.mention_count}</td>
+      <td>${e.source}</td>
+      <td>${ts.slice(11, 19)}</td>
+      <td class="reasoning-col" title="${(e.reasoning||"").replace(/"/g,"&quot;")}">${e.reasoning||""}</td>
+    </tr>`;
+  }).join("");
+
+  // Sort click handlers
+  document.querySelectorAll("thead th[data-col]").forEach(th => {
+    th.addEventListener("click", () => {
+      const col = th.dataset.col;
+      if (col === "reasoning") return;
+      if (sortCol === col) { sortDir *= -1; }
+      else { sortCol = col; sortDir = -1; }
+      document.querySelectorAll("thead th").forEach(t => t.classList.remove("sorted-asc","sorted-desc"));
+      th.classList.add(sortDir === -1 ? "sorted-desc" : "sorted-asc");
+      renderTable();
+    });
+  });
+}
+</script>
+</body>
+</html>
