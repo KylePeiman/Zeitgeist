@@ -78,11 +78,8 @@ def init_db(db_path: str) -> sqlite3.Connection:
 def upsert_entity(conn: sqlite3.Connection, signal: dict) -> int:
     """Insert or update entity record. Returns entity id."""
     name = signal["entity"]
-    entity_metadata = {}
-
-    # Try to get metadata from a sample message's entity_metadata field
-    # The signal has entity_type directly at top level
     entity_type = signal.get("entity_type", "unknown")
+    category = signal.get("category", "unknown")
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -91,15 +88,15 @@ def upsert_entity(conn: sqlite3.Connection, signal: dict) -> int:
 
     if row:
         conn.execute(
-            "UPDATE entities SET last_seen = ?, entity_type = ? WHERE id = ?",
-            (now, entity_type, row[0])
+            "UPDATE entities SET last_seen = ?, entity_type = ?, category = CASE WHEN category = 'unknown' THEN ? ELSE category END WHERE id = ?",
+            (now, entity_type, category, row[0])
         )
         conn.commit()
         return row[0]
     else:
         cursor = conn.execute(
             "INSERT INTO entities (name, category, entity_type, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
-            (name, signal.get("category", "unknown"), entity_type, now, now)
+            (name, category, entity_type, now, now)
         )
         conn.commit()
         return cursor.lastrowid

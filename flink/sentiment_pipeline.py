@@ -39,6 +39,8 @@ FLINK_URL = f"http://{FLINK_HOST}:{FLINK_PORT}"
 WINDOW_SIZE_SECONDS = int(os.getenv("SLIDING_WINDOW_SIZE_SECONDS", 300))   # 5 minutes
 SLIDE_SECONDS = int(os.getenv("SLIDING_WINDOW_SLIDE_SECONDS", 30))          # 30 seconds
 MAX_SAMPLE_TEXTS = int(os.getenv("MAX_SAMPLE_TEXTS", 5))
+NER_PROMOTION_THRESHOLD = int(os.getenv("NER_PROMOTION_THRESHOLD", 3))
+NER_COUNTS_PATH = os.getenv("NER_COUNTS_PATH", "./data/ner_candidates.json")
 
 INPUT_TOPICS = ["raw.reddit", "raw.youtube", "raw.news"]
 OUTPUT_TOPIC = "processed.signals"
@@ -52,6 +54,21 @@ try:
 except OSError:
     logger.warning("spaCy model not found — NER discovery disabled")
     NLP_AVAILABLE = False
+
+
+# ── NER CANDIDATE PERSISTENCE ─────────────────────────────────
+def load_ner_counts() -> dict:
+    try:
+        with open(NER_COUNTS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_ner_counts(counts: dict) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(NER_COUNTS_PATH)), exist_ok=True)
+    with open(NER_COUNTS_PATH, "w", encoding="utf-8") as f:
+        json.dump(counts, f)
 
 
 # ── KAFKA SETUP ───────────────────────────────────────────────
@@ -195,10 +212,15 @@ def compute_signal(entity: str, source: str, entries: list[tuple]) -> dict:
     raw_text_blob = " ".join(texts[:20])  # Cap blob size
     sentiment_keywords = extract_sentiment_keywords(texts)
 
-    # Get entity metadata from the most recent message
-    _, last_msg = entries[-1]
-    entity_metadata = last_msg.get("entity_metadata", {}).get(entity, {})
+    # Get entity metadata from the most recent message that carries it
+    entity_metadata = {}
+    for _, m in reversed(entries):
+        meta = m.get("entity_metadata", {}).get(entity, {})
+        if meta:
+            entity_metadata = meta
+            break
     entity_type = entity_metadata.get("entity_type", "unknown")
+    category = entity_metadata.get("category", "unknown")
 
     now = datetime.now(timezone.utc)
     window_start = datetime.fromtimestamp(
@@ -209,6 +231,7 @@ def compute_signal(entity: str, source: str, entries: list[tuple]) -> dict:
     return {
         "entity": entity,
         "entity_type": entity_type,
+        "category": category,
         "source": source,
         "window_start": window_start,
         "window_end": window_end,
@@ -266,10 +289,10 @@ def run():
     signals_emitted = 0
     last_slide_ts = time.time()
 
-    # NER entity promotion: track how many messages mention each discovered entity.
-    # An entity enters the buffer only after NER_PROMOTION_THRESHOLD occurrences.
-    _ner_candidate_counts: dict[str, int] = {}
-    NER_PROMOTION_THRESHOLD = 10
+    # NER entity promotion: counts persist to disk so they survive restarts.
+    _ner_candidate_counts: dict[str, int] = load_ner_counts()
+    _ner_save_counter = 0
+    logger.info(f"Loaded {len(_ner_candidate_counts)} NER candidates from disk (threshold={NER_PROMOTION_THRESHOLD})")
 
     logger.info("Pipeline running — consuming messages and computing sliding windows")
 
@@ -304,14 +327,20 @@ def run():
                                 add_to_buffer(buffer, canonical, source, data, now)
                             else:
                                 # New entity — apply promotion threshold to suppress noise
-                                _ner_candidate_counts[name] = _ner_candidate_counts.get(name, 0) + 1
+                                prev = _ner_candidate_counts.get(name, 0)
+                                _ner_candidate_counts[name] = prev + 1
+                                if prev + 1 == NER_PROMOTION_THRESHOLD:
+                                    logger.info(f"NER promoted new entity: '{name}' ({hit['entity_type']})")
                                 if _ner_candidate_counts[name] >= NER_PROMOTION_THRESHOLD:
                                     msg_with_meta = dict(data)
                                     msg_with_meta.setdefault("entity_metadata", {})[name] = {
-                                        "category": "discovered",
+                                        "category": "Discovered",
                                         "entity_type": hit["entity_type"],
                                     }
                                     add_to_buffer(buffer, name, source, msg_with_meta, now)
+                                _ner_save_counter += 1
+                                if _ner_save_counter % 50 == 0:
+                                    save_ner_counts(_ner_candidate_counts)
 
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
                     logger.debug(f"Skipping malformed message: {e}")
@@ -355,6 +384,8 @@ def run():
     finally:
         consumer.close()
         producer.flush()
+        save_ner_counts(_ner_candidate_counts)
+        logger.info(f"NER candidates saved: {len(_ner_candidate_counts)} tracked")
         logger.info(f"Final: consumed={messages_consumed} | signals_emitted={signals_emitted}")
 
 
