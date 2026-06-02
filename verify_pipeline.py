@@ -10,7 +10,6 @@ Run this to confirm the full pipeline is working.
 """
 
 import os
-import sqlite3
 import sys
 import requests
 from dotenv import load_dotenv
@@ -18,11 +17,13 @@ from loguru import logger
 from confluent_kafka import Consumer, TopicPartition
 from confluent_kafka.admin import AdminClient
 
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from db import get_connection
+
 load_dotenv()
 
 KAFDROP_URL = "http://localhost:9000"
 FLINK_URL = "http://localhost:8081"
-SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "./data/zeitgeist.db")
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 
 TOPICS = ["raw.reddit", "raw.youtube", "raw.news", "processed.signals"]
@@ -86,18 +87,20 @@ def check_flink() -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def check_sqlite(db_path: str) -> dict:
-    """Check SQLite database for data."""
-    if not os.path.exists(db_path):
-        return {"ok": False, "error": "DB file does not exist"}
+def check_db() -> dict:
+    """Check the Postgres (Neon) database for data."""
     try:
-        conn = sqlite3.connect(db_path)
-        entity_count = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
-        score_count = conn.execute("SELECT COUNT(*) FROM sentiment_scores").fetchone()[0]
-        latest = conn.execute(
-            "SELECT timestamp FROM sentiment_scores ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
+        conn = get_connection()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM entities")
+            entity_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM sentiment_scores")
+            score_count = cur.fetchone()[0]
+            cur.execute("SELECT timestamp FROM sentiment_scores ORDER BY id DESC LIMIT 1")
+            latest = cur.fetchone()
         return {
             "ok": score_count > 0,
             "entities": entity_count,
@@ -106,6 +109,8 @@ def check_sqlite(db_path: str) -> dict:
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
 
 
 def check_dashboard() -> dict:
@@ -159,9 +164,9 @@ def main():
         print(f"  {FAIL} Cannot reach Flink: {flink.get('error', '?')}")
         all_ok = False
 
-    # ── SQLite ────────────────────────────────────────────────
-    print("\n[DB]  SQLITE DATABASE")
-    db = check_sqlite(SQLITE_DB_PATH)
+    # ── Postgres ──────────────────────────────────────────────
+    print("\n[DB]  POSTGRES (NEON) DATABASE")
+    db = check_db()
     if db["ok"]:
         print(f"  {OK} {db['entities']} entities | {db['scores']} sentiment scores")
         print(f"       Latest: {db['latest_ts']}")

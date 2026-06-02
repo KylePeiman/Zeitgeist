@@ -4,14 +4,13 @@ sentiment_scorer.py — Zeitgeist LLM Sentiment Scorer
 Polls the processed.signals Kafka topic continuously.
 For each signal, builds a prompt and calls the llama.cpp server
 at LLAMA_SERVER_URL (default: http://localhost:8080).
-Writes LLM sentiment results to SQLite at SQLITE_DB_PATH.
+Writes LLM sentiment results to Postgres (Neon) — see db.py / DATABASE_URL.
 """
 
 import json
 import os
 import re
 import sys
-import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -22,12 +21,13 @@ import requests
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from db import DATABASE_URL, get_connection, init_db  # noqa: E402
+
 load_dotenv()
 
 # ── CONFIG ────────────────────────────────────────────────────
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://localhost:8080")
-SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "./data/zeitgeist.db")
 INPUT_TOPIC = "processed.signals"
 
 LLAMA_MAX_TOKENS = 500
@@ -39,43 +39,8 @@ _llm_semaphore = threading.Semaphore(LLM_CONCURRENCY)
 
 
 # ── DATABASE ──────────────────────────────────────────────────
-def init_db(db_path: str) -> sqlite3.Connection:
-    """Create SQLite DB and tables if they don't exist."""
-    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS entities (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            name        TEXT    UNIQUE NOT NULL,
-            category    TEXT,
-            entity_type TEXT,
-            first_seen  TEXT    NOT NULL,
-            last_seen   TEXT    NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sentiment_scores (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            entity_id       INTEGER NOT NULL REFERENCES entities(id),
-            timestamp       TEXT    NOT NULL,
-            sentiment       TEXT    NOT NULL,
-            confidence      REAL    NOT NULL,
-            sentiment_score REAL    NOT NULL,
-            reasoning       TEXT,
-            intensity       TEXT,
-            mention_count   INTEGER,
-            engagement_score REAL,
-            source          TEXT,
-            sample_size     INTEGER
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_ss_entity_ts ON sentiment_scores(entity_id, timestamp)")
-    conn.commit()
-    return conn
-
-
-def upsert_entity(conn: sqlite3.Connection, signal: dict) -> int:
+# Connection + schema live in db.py (init_db / get_connection, imported above).
+def upsert_entity(conn, signal: dict) -> int:
     """Insert or update entity record. Returns entity id."""
     name = signal["entity"]
     entity_type = signal.get("entity_type", "unknown")
@@ -83,46 +48,56 @@ def upsert_entity(conn: sqlite3.Connection, signal: dict) -> int:
 
     now = datetime.now(timezone.utc).isoformat()
 
-    cursor = conn.execute("SELECT id FROM entities WHERE name = ?", (name,))
-    row = cursor.fetchone()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM entities WHERE name = %s", (name,))
+        row = cur.fetchone()
 
-    if row:
-        conn.execute(
-            "UPDATE entities SET last_seen = ?, entity_type = ?, category = CASE WHEN category = 'unknown' THEN ? ELSE category END WHERE id = ?",
-            (now, entity_type, category, row[0])
+        if row:
+            cur.execute(
+                "UPDATE entities SET last_seen = %s, entity_type = %s, "
+                "category = CASE WHEN category = 'unknown' THEN %s ELSE category END "
+                "WHERE id = %s",
+                (now, entity_type, category, row[0]),
+            )
+            conn.commit()
+            return row[0]
+
+        cur.execute(
+            "INSERT INTO entities (name, category, entity_type, first_seen, last_seen) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (name, category, entity_type, now, now),
         )
-        conn.commit()
-        return row[0]
-    else:
-        cursor = conn.execute(
-            "INSERT INTO entities (name, category, entity_type, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
-            (name, category, entity_type, now, now)
-        )
-        conn.commit()
-        return cursor.lastrowid
+        entity_id = cur.fetchone()[0]
+    conn.commit()
+    return entity_id
 
 
-def write_sentiment_score(conn: sqlite3.Connection, entity_id: int, signal: dict, llm_result: dict):
+def write_sentiment_score(conn, entity_id: int, signal: dict, llm_result: dict):
     """Insert a sentiment score row."""
     now = datetime.now(timezone.utc).isoformat()
-    conn.execute("""
-        INSERT INTO sentiment_scores
-            (entity_id, timestamp, sentiment, confidence, sentiment_score,
-             reasoning, intensity, mention_count, engagement_score, source, sample_size)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        entity_id,
-        now,
-        llm_result.get("sentiment", "neutral"),
-        float(llm_result.get("confidence", 0.5)),
-        float(llm_result.get("sentiment_score", 0.0)),
-        llm_result.get("reasoning", ""),
-        llm_result.get("intensity", "medium"),
-        signal.get("mention_count", 0),
-        float(signal.get("engagement_score", 0)),
-        signal.get("source", "unknown"),
-        len(signal.get("sample_texts", [])),
-    ))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO sentiment_scores
+                (entity_id, timestamp, sentiment, confidence, sentiment_score,
+                 reasoning, intensity, mention_count, engagement_score, source, sample_size)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (entity_id, timestamp, source) DO NOTHING
+            """,
+            (
+                entity_id,
+                now,
+                llm_result.get("sentiment", "neutral"),
+                float(llm_result.get("confidence", 0.5)),
+                float(llm_result.get("sentiment_score", 0.0)),
+                llm_result.get("reasoning", ""),
+                llm_result.get("intensity", "medium"),
+                signal.get("mention_count", 0),
+                float(signal.get("engagement_score", 0)),
+                signal.get("source", "unknown"),
+                len(signal.get("sample_texts", [])),
+            ),
+        )
     conn.commit()
 
 
@@ -256,7 +231,7 @@ def make_consumer() -> Consumer:
 
 
 # ── WORKER FUNCTION ───────────────────────────────────────────
-def process_signal(raw_value: bytes, conn: sqlite3.Connection, db_lock: threading.Lock) -> str:
+def process_signal(raw_value: bytes, conn, db_lock: threading.Lock) -> str:
     """Parse, score, and persist one signal. Runs in a worker thread."""
     signal = json.loads(raw_value.decode("utf-8"))
     entity = signal.get("entity", "")
@@ -280,9 +255,9 @@ def process_signal(raw_value: bytes, conn: sqlite3.Connection, db_lock: threadin
 # ── MAIN LOOP ─────────────────────────────────────────────────
 def run():
     logger.info(f"Starting LLM Sentiment Scorer | workers={SCORER_WORKERS}")
-    logger.info(f"Topic: {INPUT_TOPIC} | LLM: {LLAMA_SERVER_URL} | DB: {SQLITE_DB_PATH}")
+    logger.info(f"Topic: {INPUT_TOPIC} | LLM: {LLAMA_SERVER_URL} | DB: Postgres")
 
-    conn = init_db(SQLITE_DB_PATH)
+    conn = init_db(get_connection())
     db_lock = threading.Lock()
     consumer = make_consumer()
     consumer.subscribe([INPUT_TOPIC])

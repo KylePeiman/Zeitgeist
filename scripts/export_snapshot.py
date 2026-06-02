@@ -1,7 +1,7 @@
 """
 export_snapshot.py — Zeitgeist Static Snapshot Exporter
 
-Reads from SQLite and writes docs/data.json for GitHub Pages.
+Reads from Postgres (Neon) and writes docs/data.json for GitHub Pages.
 
 Usage:
   python scripts/export_snapshot.py
@@ -11,38 +11,42 @@ Usage:
 import argparse
 import json
 import os
-import sqlite3
 import sys
 from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 from dotenv import load_dotenv
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from db import get_connection
+
 load_dotenv()
 
-SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "./data/zeitgeist.db")
 OUT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "data.json")
 
 
 def export(days: int = 30) -> None:
-    if not os.path.exists(SQLITE_DB_PATH):
-        print(f"ERROR: DB not found at {SQLITE_DB_PATH}", file=sys.stderr)
+    try:
+        conn = get_connection()
+    except Exception as e:
+        print(f"ERROR: cannot connect to database: {e}", file=sys.stderr)
         sys.exit(1)
 
-    conn = sqlite3.connect(SQLITE_DB_PATH)
-    df = pd.read_sql_query(
-        """
-        SELECT e.name, e.category, e.entity_type,
-               s.sentiment, s.sentiment_score, s.confidence,
-               s.mention_count, s.engagement_score, s.source,
-               s.timestamp, s.reasoning
-        FROM sentiment_scores s
-        JOIN entities e ON s.entity_id = e.id
-        ORDER BY s.timestamp
-        """,
-        conn,
-    )
-    conn.close()
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT e.name, e.category, e.entity_type,
+                   s.sentiment, s.sentiment_score, s.confidence,
+                   s.mention_count, s.engagement_score, s.source,
+                   s.timestamp, s.reasoning
+            FROM sentiment_scores s
+            JOIN entities e ON s.entity_id = e.id
+            ORDER BY s.timestamp
+            """,
+            conn,
+        )
+    finally:
+        conn.close()
 
     if df.empty:
         print("No data in DB — nothing to export.")
