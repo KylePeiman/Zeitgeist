@@ -1,12 +1,12 @@
 """
 app.py — Zeitgeist Sentiment Dashboard
 
-Reads from SQLite in real time. Auto-refreshes every 30 seconds.
+Reads from Postgres (Neon) in real time. Auto-refreshes every 30 seconds.
 Shows leaderboards, sentiment trends, and entity-level breakdowns.
 """
 
 import os
-import sqlite3
+import sys
 import pandas as pd
 import streamlit as st
 import plotly.express as px
@@ -14,9 +14,11 @@ import plotly.graph_objects as go
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from db import get_connection
+
 load_dotenv()
 
-SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "./data/zeitgeist.db")
 REFRESH_INTERVAL_MS = 30_000
 
 # ── PAGE CONFIG ───────────────────────────────────────────────
@@ -51,32 +53,35 @@ st.markdown("""
 
 # ── DATA LOADING ──────────────────────────────────────────────
 @st.cache_data(ttl=30)
-def load_all_data(db_path: str) -> pd.DataFrame:
-    """Load all sentiment scores joined with entity metadata."""
-    if not os.path.exists(db_path):
+def load_all_data() -> pd.DataFrame:
+    """Load all sentiment scores joined with entity metadata from Postgres."""
+    try:
+        conn = get_connection()
+    except Exception:
         return pd.DataFrame()
-    conn = sqlite3.connect(db_path)
-    df = pd.read_sql_query("""
-        SELECT
-            s.id,
-            e.name,
-            e.category,
-            e.entity_type,
-            s.timestamp,
-            s.sentiment,
-            s.sentiment_score,
-            s.confidence,
-            s.intensity,
-            s.mention_count,
-            s.engagement_score,
-            s.source,
-            s.reasoning,
-            s.sample_size
-        FROM sentiment_scores s
-        JOIN entities e ON s.entity_id = e.id
-        ORDER BY s.timestamp DESC
-    """, conn)
-    conn.close()
+    try:
+        df = pd.read_sql_query("""
+            SELECT
+                s.id,
+                e.name,
+                e.category,
+                e.entity_type,
+                s.timestamp,
+                s.sentiment,
+                s.sentiment_score,
+                s.confidence,
+                s.intensity,
+                s.mention_count,
+                s.engagement_score,
+                s.source,
+                s.reasoning,
+                s.sample_size
+            FROM sentiment_scores s
+            JOIN entities e ON s.entity_id = e.id
+            ORDER BY s.timestamp DESC
+        """, conn)
+    finally:
+        conn.close()
     if df.empty:
         return df
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
@@ -109,7 +114,7 @@ with st.sidebar:
     st.caption("Real-time public sentiment pipeline")
     st.divider()
 
-    df_raw = load_all_data(SQLITE_DB_PATH)
+    df_raw = load_all_data()
 
     if df_raw.empty:
         st.warning("No data yet. Make sure the pipeline is running.")

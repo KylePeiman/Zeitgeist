@@ -21,12 +21,12 @@ import argparse
 import json
 import math
 import os
-import sqlite3
 import sys
 import time
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 
+import psycopg2
 import requests
 from dotenv import load_dotenv
 from loguru import logger
@@ -34,10 +34,10 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from entities import ENTITIES
+from db import DATABASE_URL, get_connection, init_db
 
 load_dotenv()
 
-SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH", "./data/zeitgeist.db")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")
 
@@ -51,67 +51,35 @@ vader = SentimentIntensityAnalyzer()
 
 # ── DATABASE ──────────────────────────────────────────────────
 
-def init_db(db_path: str) -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS entities (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            name        TEXT    UNIQUE NOT NULL,
-            category    TEXT,
-            entity_type TEXT,
-            first_seen  TEXT    NOT NULL,
-            last_seen   TEXT    NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS sentiment_scores (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            entity_id        INTEGER NOT NULL REFERENCES entities(id),
-            timestamp        TEXT    NOT NULL,
-            sentiment        TEXT    NOT NULL,
-            confidence       REAL    NOT NULL,
-            sentiment_score  REAL    NOT NULL,
-            reasoning        TEXT,
-            intensity        TEXT,
-            mention_count    INTEGER,
-            engagement_score REAL,
-            source           TEXT,
-            sample_size      INTEGER
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_ss_entity_ts ON sentiment_scores(entity_id, timestamp)")
-    # Unique index allows INSERT OR IGNORE for safe re-runs
-    conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_ss_backfill_unique
-        ON sentiment_scores(entity_id, timestamp, source)
-    """)
-    conn.commit()
-    return conn
+# Connection + schema (including the unique index used for idempotent re-runs)
+# live in db.py — init_db / get_connection are imported above.
 
 
-def upsert_entity(conn: sqlite3.Connection, entity: dict) -> int:
+def upsert_entity(conn, entity: dict) -> int:
     now = datetime.now(timezone.utc).isoformat()
     name = entity["name"]
-    row = conn.execute("SELECT id FROM entities WHERE name = ?", (name,)).fetchone()
-    if row:
-        conn.execute(
-            "UPDATE entities SET last_seen = ?, category = ?, entity_type = ? WHERE id = ?",
-            (now, entity["category"], entity["entity_type"], row[0]),
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM entities WHERE name = %s", (name,))
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                "UPDATE entities SET last_seen = %s, category = %s, entity_type = %s WHERE id = %s",
+                (now, entity["category"], entity["entity_type"], row[0]),
+            )
+            conn.commit()
+            return row[0]
+        cur.execute(
+            "INSERT INTO entities (name, category, entity_type, first_seen, last_seen) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (name, entity["category"], entity["entity_type"], now, now),
         )
-        conn.commit()
-        return row[0]
-    cursor = conn.execute(
-        "INSERT INTO entities (name, category, entity_type, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
-        (name, entity["category"], entity["entity_type"], now, now),
-    )
+        entity_id = cur.fetchone()[0]
     conn.commit()
-    return cursor.lastrowid
+    return entity_id
 
 
 def write_score(
-    conn: sqlite3.Connection,
+    conn,
     entity_id: int,
     timestamp: str,
     sentiment_score: float,
@@ -130,22 +98,21 @@ def write_score(
     else:
         sentiment = "neutral"
     intensity = "high" if abs(score) > 0.5 else "medium" if abs(score) > 0.2 else "low"
-    try:
-        conn.execute(
+    with conn.cursor() as cur:
+        cur.execute(
             """
-            INSERT OR IGNORE INTO sentiment_scores
+            INSERT INTO sentiment_scores
                 (entity_id, timestamp, sentiment, confidence, sentiment_score,
                  reasoning, intensity, mention_count, engagement_score, source, sample_size)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (entity_id, timestamp, source) DO NOTHING
             """,
             (
                 entity_id, timestamp, sentiment, round(confidence, 3), round(score, 4),
                 reasoning, intensity, mention_count, float(engagement_score), source, sample_size,
             ),
         )
-        conn.commit()
-    except sqlite3.IntegrityError:
-        pass  # Duplicate row — safe to skip
+    conn.commit()
 
 
 # ── GDELT PROJECT ─────────────────────────────────────────────
@@ -492,9 +459,9 @@ def run():
     start_year = args.start_year
 
     logger.info(f"Backfill starting | sources={sorted(sources)} | start_year={start_year}")
-    logger.info(f"DB: {SQLITE_DB_PATH}")
+    logger.info("DB: Postgres")
 
-    conn = init_db(SQLITE_DB_PATH)
+    conn = init_db(get_connection())
 
     entity_ids: dict[str, int] = {}
     for entity in ENTITIES:

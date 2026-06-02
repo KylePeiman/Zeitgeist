@@ -6,7 +6,7 @@
 
 ```
 [Reddit Producer] ──→ raw.reddit ──┐
-[YouTube Producer] ─→ raw.youtube ─┤→ [Flink] → processed.signals → [LLM Service] → SQLite → Streamlit
+[YouTube Producer] ─→ raw.youtube ─┤→ [Flink] → processed.signals → [LLM Service] → Postgres (Neon) → Streamlit
 [News Producer] ────→ raw.news ────┘
 ```
 
@@ -14,7 +14,7 @@
 - **Kafka** — message broker for raw and processed data streams
 - **Apache Flink** — sliding window aggregation and signal normalization
 - **VADER / llama.cpp** — sentiment scoring (VADER by default; llama.cpp if running locally)
-- **SQLite** — persistence layer for sentiment scores
+- **Postgres (Neon)** — persistence layer for sentiment scores (set via `DATABASE_URL`)
 - **Streamlit** — real-time leaderboard dashboard
 
 ## Project Structure
@@ -37,9 +37,11 @@ zeitgeist/
 │   └── sentiment_scorer.py
 ├── dashboard/
 │   └── app.py
-└── data/
-    └── zeitgeist.db         # SQLite database (auto-created, gitignored)
+└── db.py                    # Postgres (Neon) connection + schema
 ```
+
+Sentiment data is stored in **Neon Postgres**. Tables are created automatically
+on first run; point `DATABASE_URL` at your Neon connection string in `.env`.
 
 ## Setup
 
