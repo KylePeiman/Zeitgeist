@@ -11,8 +11,10 @@ google-api-python-client==2.131.0
 newsapi-python==0.2.7
 feedparser==6.0.11   # Google News RSS parsing (news_producer Phase 2)
 
-# Flink
-apache-flink==1.18.1
+# Flink runs as a Docker image (see docker-compose.yml). The pipeline talks to
+# it over the REST API via `requests` — no PyFlink dependency. The apache-flink
+# Python package is intentionally NOT installed: it pulls in apache-beam, which
+# fails to build on Python 3.12 (pkg_resources removed) and is never imported.
 
 # NLP / NER
 spacy==3.7.4
