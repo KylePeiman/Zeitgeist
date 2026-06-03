@@ -132,6 +132,28 @@ def extract_sentiment_keywords(texts: list[str]) -> list[str]:
 
 
 # ── SPACY NER DISCOVERY ───────────────────────────────────────
+_NER_VERB_TAGS = {"VB", "VBZ", "VBD", "VBG", "VBN", "VBP"}
+
+def _ner_entity_is_valid(ent) -> bool:
+    """Reject low-quality NER spans before they enter candidate counting.
+
+    Filters:
+    - All-lowercase text (proper nouns are capitalised)
+    - Any token is a verb (headline fragments like "Jill Biden Gives Grim Update")
+    - Single character
+    - Whitespace-only after stripping
+    """
+    name = ent.text.strip()
+    if not name or len(name) < 2:
+        return False
+    if name == name.lower():
+        return False
+    for token in ent:
+        if token.tag_ in _NER_VERB_TAGS:
+            return False
+    return True
+
+
 def discover_entities_ner(text_blob: str) -> list[dict]:
     """Use spaCy NER to find entities not in the seed list."""
     if not NLP_AVAILABLE or not text_blob:
@@ -140,9 +162,9 @@ def discover_entities_ner(text_blob: str) -> list[dict]:
         doc = nlp(text_blob[:5000])  # Cap to avoid slow processing
         discovered = []
         for ent in doc.ents:
-            if ent.label_ in ("PERSON", "ORG", "GPE", "PRODUCT"):
+            if ent.label_ in ("PERSON", "ORG", "GPE", "PRODUCT") and _ner_entity_is_valid(ent):
                 discovered.append({
-                    "name": ent.text,
+                    "name": ent.text.strip(),
                     "entity_type": ent.label_.lower(),
                     "source": "ner_discovery",
                 })
