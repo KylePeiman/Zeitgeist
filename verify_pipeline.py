@@ -113,6 +113,63 @@ def check_db() -> dict:
         conn.close()
 
 
+def check_latency(limit: int = 2000) -> dict:
+    """Summarize pipeline latency over the most recent scored rows.
+
+    Two measurements:
+      - end_to_end:  newest source ingest in the window → DB write (latency_seconds)
+      - scoring:     window emit (timestamp) → DB write (scored_at − timestamp)
+    """
+    try:
+        conn = get_connection()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(latency_seconds),
+                    AVG(latency_seconds),
+                    PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY latency_seconds),
+                    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_seconds),
+                    MAX(latency_seconds),
+                    AVG(EXTRACT(EPOCH FROM (scored_at::timestamptz - timestamp::timestamptz))),
+                    PERCENTILE_CONT(0.95) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (scored_at::timestamptz - timestamp::timestamptz))
+                    )
+                FROM (
+                    SELECT latency_seconds, scored_at, timestamp
+                    FROM sentiment_scores
+                    WHERE scored_at IS NOT NULL
+                    ORDER BY id DESC
+                    LIMIT %s
+                ) recent
+                """,
+                (limit,),
+            )
+            r = cur.fetchone()
+        if not r or r[0] in (None, 0):
+            return {"ok": False, "instrumented": False}
+        return {
+            "ok": True,
+            "instrumented": True,
+            "samples": r[0],
+            "e2e_avg": r[1],
+            "e2e_p50": r[2],
+            "e2e_p95": r[3],
+            "e2e_max": r[4],
+            "score_avg": r[5],
+            "score_p95": r[6],
+        }
+    except Exception as e:
+        # Most likely the latency columns don't exist yet (scorer hasn't run
+        # with instrumentation). Treat as "not instrumented" rather than fatal.
+        return {"ok": False, "instrumented": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
 def check_dashboard() -> dict:
     """Check if Streamlit dashboard is running."""
     try:
@@ -175,6 +232,24 @@ def main():
         if db.get("scores", 0) == 0:
             print("       Run sentiment_scorer.py to populate the DB")
         all_ok = False
+
+    # ── Latency ───────────────────────────────────────────────
+    print("\n[LAT] PIPELINE LATENCY (recent scored rows)")
+    lat = check_latency()
+    if lat["ok"]:
+        def _fmt(s):
+            return f"{s:.1f}s" if s is not None else "n/a"
+        print(f"  {OK} samples={lat['samples']:,}")
+        print(f"       end-to-end (ingest→score): "
+              f"p50 {_fmt(lat['e2e_p50'])} | p95 {_fmt(lat['e2e_p95'])} | "
+              f"avg {_fmt(lat['e2e_avg'])} | max {_fmt(lat['e2e_max'])}")
+        print(f"       scoring stage (emit→write): "
+              f"p95 {_fmt(lat['score_p95'])} | avg {_fmt(lat['score_avg'])}")
+    elif not lat.get("instrumented", True):
+        print(f"  {WARN} No latency data yet "
+              "(run the scorer with instrumentation to populate scored_at/latency_seconds)")
+    else:
+        print(f"  {FAIL} Latency query error: {lat.get('error', '?')}")
 
     # ── Dashboard ─────────────────────────────────────────────
     print("\n[DASH] STREAMLIT DASHBOARD (localhost:8501)")

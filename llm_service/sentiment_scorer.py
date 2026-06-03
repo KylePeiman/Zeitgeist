@@ -72,6 +72,16 @@ def upsert_entity(conn, signal: dict) -> int:
     return entity_id
 
 
+def _parse_iso(ts: str):
+    """Parse an ISO-8601 timestamp, returning None on any failure."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+
+
 def write_sentiment_score(conn, entity_id: int, signal: dict, llm_result: dict):
     """Insert a sentiment score row."""
     # Key the row on the window's event time, not the write time. Using
@@ -85,13 +95,23 @@ def write_sentiment_score(conn, entity_id: int, signal: dict, llm_result: dict):
         or signal.get("computed_at")
         or datetime.now(timezone.utc).isoformat()
     )
+
+    # Latency instrumentation: scored_at is the wall-clock write time;
+    # latency_seconds is the end-to-end ingest→score latency (newest source
+    # message in the window → now). Left NULL when the source time is missing.
+    scored_dt = datetime.now(timezone.utc)
+    scored_at = scored_dt.isoformat()
+    ingested_dt = _parse_iso(signal.get("latest_ingested_at"))
+    latency_seconds = (scored_dt - ingested_dt).total_seconds() if ingested_dt else None
+
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO sentiment_scores
                 (entity_id, timestamp, sentiment, confidence, sentiment_score,
-                 reasoning, intensity, mention_count, engagement_score, source, sample_size)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 reasoning, intensity, mention_count, engagement_score, source,
+                 sample_size, scored_at, latency_seconds)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (entity_id, timestamp, source) DO NOTHING
             """,
             (
@@ -106,6 +126,8 @@ def write_sentiment_score(conn, entity_id: int, signal: dict, llm_result: dict):
                 float(signal.get("engagement_score", 0)),
                 signal.get("source", "unknown"),
                 len(signal.get("sample_texts", [])),
+                scored_at,
+                latency_seconds,
             ),
         )
     conn.commit()

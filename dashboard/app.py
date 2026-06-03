@@ -75,7 +75,8 @@ def load_all_data() -> pd.DataFrame:
                 s.engagement_score,
                 s.source,
                 s.reasoning,
-                s.sample_size
+                s.sample_size,
+                s.latency_seconds
             FROM sentiment_scores s
             JOIN entities e ON s.entity_id = e.id
             ORDER BY s.timestamp DESC
@@ -157,6 +158,15 @@ with st.sidebar:
     total_scores = len(df_raw)
     st.metric("Entities tracked", total_entities)
     st.metric("Score records", total_scores)
+    if "latency_seconds" in df_raw.columns:
+        lat = pd.to_numeric(df_raw["latency_seconds"], errors="coerce").dropna()
+        if not lat.empty:
+            st.metric(
+                "Median latency",
+                f"{lat.median():.1f}s",
+                help="End-to-end: newest source mention in the window → sentiment score in the DB. "
+                     f"p95 {lat.quantile(0.95):.1f}s",
+            )
     latest_ts = df_raw["timestamp"].max()
     st.caption(f"Last updated: {latest_ts.strftime('%H:%M:%S UTC') if pd.notna(latest_ts) else 'N/A'}")
 
