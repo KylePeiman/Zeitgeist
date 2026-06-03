@@ -132,24 +132,47 @@ def extract_sentiment_keywords(texts: list[str]) -> list[str]:
 
 
 # ── SPACY NER DISCOVERY ───────────────────────────────────────
-_NER_VERB_TAGS = {"VB", "VBZ", "VBD", "VBG", "VBN", "VBP"}
+# Verbs and adverbs never belong in a proper-noun name. On Title-Case headline
+# text spaCy's POS tagger is unreliable (e.g. "Trolls" tags as a plural noun,
+# not a verb), so the adverb check is the more robust guard against headline
+# fragments like "Paul Seemingly Trolls" — "Seemingly" reliably tags as RB.
+_NER_BAD_TAGS = {"VB", "VBZ", "VBD", "VBG", "VBN", "VBP", "RB", "RBR", "RBS"}
 
-def _ner_entity_is_valid(ent) -> bool:
+
+def _normalize_ner_name(name: str) -> str:
+    """Canonicalise an NER span: unify apostrophes and strip the possessive.
+
+    Without this, "Jay-Z's" (straight quote), "Jay-Z's" (curly quote) and the
+    seed "Jay-Z" become three separate entities. Folding the possessive lets the
+    name match its seed alias (or at least dedupe to one discovered row).
+    """
+    name = name.replace("’", "'").replace("‘", "'").strip()
+    low = name.lower()
+    if low.endswith("'s"):
+        name = name[:-2]
+    elif name.endswith("'"):
+        name = name[:-1]
+    return name.strip()
+
+
+def _ner_entity_is_valid(name: str, ent) -> bool:
     """Reject low-quality NER spans before they enter candidate counting.
 
     Filters:
+    - Empty / single character after normalisation
     - All-lowercase text (proper nouns are capitalised)
-    - Any token is a verb (headline fragments like "Jill Biden Gives Grim Update")
-    - Single character
-    - Whitespace-only after stripping
+    - Any token is a verb or adverb (headline fragments like
+      "Jill Biden Gives Grim Update" or "Paul Seemingly Trolls")
     """
-    name = ent.text.strip()
     if not name or len(name) < 2:
         return False
     if name == name.lower():
         return False
     for token in ent:
-        if token.tag_ in _NER_VERB_TAGS:
+        # Skip the possessive token itself ("'s") that normalisation drops.
+        if token.tag_ == "POS":
+            continue
+        if token.tag_ in _NER_BAD_TAGS:
             return False
     return True
 
@@ -162,9 +185,12 @@ def discover_entities_ner(text_blob: str) -> list[dict]:
         doc = nlp(text_blob[:5000])  # Cap to avoid slow processing
         discovered = []
         for ent in doc.ents:
-            if ent.label_ in ("PERSON", "ORG", "GPE", "PRODUCT") and _ner_entity_is_valid(ent):
+            if ent.label_ not in ("PERSON", "ORG", "GPE", "PRODUCT"):
+                continue
+            name = _normalize_ner_name(ent.text)
+            if _ner_entity_is_valid(name, ent):
                 discovered.append({
-                    "name": ent.text.strip(),
+                    "name": name,
                     "entity_type": ent.label_.lower(),
                     "source": "ner_discovery",
                 })
