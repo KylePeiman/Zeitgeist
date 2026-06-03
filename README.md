@@ -62,6 +62,21 @@ cp .env.example .env
 pip install -r requirements.txt
 ```
 
+> **Required for entity discovery:** `requirements.txt` includes the spaCy
+> `en_core_web_sm` model. Without it, NER discovery is disabled and the pipeline
+> can only ever track the seed entities (the "stuck at 94" symptom). If the
+> bundled wheel URL can't be fetched in your environment, install it directly:
+> ```powershell
+> python -m spacy download en_core_web_sm
+> ```
+> Confirm it's enabled any time with `python verify_pipeline.py` (the `[NER]`
+> line must say "ENABLED").
+
+> **After pulling new code:** re-run `pip install -r requirements.txt` and
+> restart the pipeline (`.\stop.ps1` then `.\start.ps1`) — long-running
+> producer/scorer processes do not pick up code or dependency changes until
+> restarted.
+
 ### 4. Start everything
 ```powershell
 .\start.ps1
@@ -90,9 +105,14 @@ Kills all pipeline processes and tears down Docker (including volumes).
 
 | Source | Key required? | Where to get one |
 |--------|--------------|-----------------|
-| Reddit | No | Uses public JSON API — no credentials needed |
+| Reddit | Recommended | Public JSON works locally but **403-blocks most cloud/datacenter IPs**. For reliable ingestion create a free "script" app at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) and set `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` in `.env`; the producer uses the authenticated API when present and falls back to public JSON otherwise. |
 | YouTube | Optional | [Google Cloud Console](https://console.cloud.google.com) — enable YouTube Data API v3 |
-| News | Optional | [newsapi.org](https://newsapi.org) free tier (100 req/day); falls back to Google News RSS |
+| News | No | Google News RSS needs no key (runs by default). Optionally set `NEWS_API_KEY` from [newsapi.org](https://newsapi.org) to also pull NewsAPI. |
+
+If `raw.reddit` or `raw.news` show **0 messages** in `python verify_pipeline.py`,
+that producer isn't ingesting — check `logs/reddit.log` / `logs/news.log` for
+403s (Reddit → set OAuth creds) or a missing `feedparser` (News → re-run
+`pip install -r requirements.txt`).
 
 ## UIs
 
