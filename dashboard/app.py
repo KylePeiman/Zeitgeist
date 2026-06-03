@@ -158,15 +158,6 @@ with st.sidebar:
     total_scores = len(df_raw)
     st.metric("Entities tracked", total_entities)
     st.metric("Score records", total_scores)
-    if "latency_seconds" in df_raw.columns:
-        lat = pd.to_numeric(df_raw["latency_seconds"], errors="coerce").dropna()
-        if not lat.empty:
-            st.metric(
-                "Median latency",
-                f"{lat.median():.1f}s",
-                help="End-to-end: newest source mention in the window → sentiment score in the DB. "
-                     f"p95 {lat.quantile(0.95):.1f}s",
-            )
     latest_ts = df_raw["timestamp"].max()
     st.caption(f"Last updated: {latest_ts.strftime('%H:%M:%S UTC') if pd.notna(latest_ts) else 'N/A'}")
 
@@ -198,7 +189,7 @@ st.caption(f"Auto-refreshes every 30s | Showing last {hours_back}h | {len(df)} d
 
 # ── TOP METRICS ROW ───────────────────────────────────────────
 if not latest.empty:
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     most_loved = latest.loc[latest["adjusted_score"].idxmax()]
     most_hated = latest.loc[latest["adjusted_score"].idxmin()]
@@ -223,6 +214,20 @@ if not latest.empty:
         st.metric("Avg Sentiment", f"{avg_score:+.3f}")
     with col4:
         st.metric("% Positive", f"{pos_pct:.0f}%")
+    with col5:
+        lat_metric = (
+            pd.to_numeric(df["latency_seconds"], errors="coerce").dropna()
+            if "latency_seconds" in df.columns else pd.Series(dtype=float)
+        )
+        if not lat_metric.empty:
+            st.metric(
+                "Latency (p50)",
+                f"{lat_metric.median():.1f}s",
+                help="End-to-end: newest source mention in the window → score in the DB. "
+                     f"p95 {lat_metric.quantile(0.95):.1f}s over {len(lat_metric):,} scores.",
+            )
+        else:
+            st.metric("Latency (p50)", "n/a", help="No latency data in this window yet.")
 
 st.divider()
 
@@ -266,6 +271,57 @@ with col_hate:
                 f"</div>",
                 unsafe_allow_html=True,
             )
+
+st.divider()
+
+# ── PIPELINE LATENCY ──────────────────────────────────────────
+st.subheader("Pipeline Latency")
+st.caption("End-to-end: newest source mention in a window → sentiment score written to the DB")
+
+lat_df = (
+    df[["timestamp", "latency_seconds"]].copy()
+    if "latency_seconds" in df.columns else pd.DataFrame()
+)
+if not lat_df.empty:
+    lat_df["latency_seconds"] = pd.to_numeric(lat_df["latency_seconds"], errors="coerce")
+    lat_df = lat_df.dropna(subset=["latency_seconds"])
+
+if lat_df.empty:
+    st.info("No latency data in this window yet — the scorer records it on newly written scores.")
+else:
+    # Bucket size scales with the selected time window
+    bucket = "5min" if hours_back <= 12 else "1h" if hours_back <= 168 else "6h"
+    grouped = lat_df.set_index("timestamp").resample(bucket)["latency_seconds"]
+    agg = pd.DataFrame({
+        "p50": grouped.median(),
+        "p95": grouped.quantile(0.95),
+    }).dropna(how="all").reset_index()
+
+    lcol1, lcol2, lcol3 = st.columns(3)
+    lcol1.metric("p50", f"{lat_df['latency_seconds'].median():.1f}s")
+    lcol2.metric("p95", f"{lat_df['latency_seconds'].quantile(0.95):.1f}s")
+    lcol3.metric("max", f"{lat_df['latency_seconds'].max():.1f}s")
+
+    fig_lat = go.Figure()
+    fig_lat.add_trace(go.Scatter(
+        x=agg["timestamp"], y=agg["p50"], name="p50",
+        mode="lines", line=dict(color="#29b6f6", width=2),
+    ))
+    fig_lat.add_trace(go.Scatter(
+        x=agg["timestamp"], y=agg["p95"], name="p95",
+        mode="lines", line=dict(color="#ef5350", width=2, dash="dot"),
+    ))
+    fig_lat.update_layout(
+        plot_bgcolor="#111111",
+        paper_bgcolor="#111111",
+        font_color="#e0e0e0",
+        height=300,
+        xaxis=dict(gridcolor="#2a2a2a"),
+        yaxis=dict(title="seconds", gridcolor="#2a2a2a", rangemode="tozero"),
+        legend=dict(bgcolor="#1a1a1a", orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=10, r=10, t=10, b=40),
+    )
+    st.plotly_chart(fig_lat, use_container_width=True)
 
 st.divider()
 
