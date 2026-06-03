@@ -87,5 +87,17 @@ def init_db(conn=None):
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_ss_unique "
             "ON sentiment_scores(entity_id, timestamp, source)"
         )
+        # Latency instrumentation — added after the original schema, so migrate
+        # in place for existing databases. `scored_at` is the wall-clock write
+        # time (vs. `timestamp`, which is the window's event time); the gap
+        # between them is the scoring-stage latency. `latency_seconds` is the
+        # end-to-end ingest→score latency precomputed at write time.
+        cur.execute(
+            "ALTER TABLE sentiment_scores ADD COLUMN IF NOT EXISTS scored_at TEXT"
+        )
+        cur.execute(
+            "ALTER TABLE sentiment_scores "
+            "ADD COLUMN IF NOT EXISTS latency_seconds DOUBLE PRECISION"
+        )
     conn.commit()
     return conn

@@ -200,6 +200,11 @@ def compute_signal(entity: str, source: str, entries: list[tuple]) -> dict:
 
         engagement_scores.append(get_engagement(msg))
 
+    # Newest source-ingest time in the window — lets the scorer compute the
+    # end-to-end ingest→score latency. ISO8601 UTC strings sort chronologically.
+    ingested_times = [m.get("ingested_at") for _, m in entries if m.get("ingested_at")]
+    latest_ingested_at = max(ingested_times) if ingested_times else None
+
     total_engagement = sum(engagement_scores)
     mention_count = len(entries)
     window_minutes = WINDOW_SIZE_SECONDS / 60.0
@@ -245,6 +250,7 @@ def compute_signal(entity: str, source: str, entries: list[tuple]) -> dict:
         "sample_texts": sample_texts,
         "raw_text_blob": raw_text_blob[:2000],
         "discovered_entities": discover_entities_ner(raw_text_blob),
+        "latest_ingested_at": latest_ingested_at,
         "computed_at": now.isoformat(),
     }
 
