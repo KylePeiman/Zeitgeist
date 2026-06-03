@@ -46,11 +46,11 @@ def main():
             cur.execute("SELECT COUNT(*) FROM entities WHERE category != 'Discovered'")
             seed_count = cur.fetchone()[0]
 
-        print(f"  sentiment_scores:       {score_count:,} rows  → will DELETE ALL")
-        print(f"  entities (Discovered):  {discovered_count:,} rows  → will DELETE")
-        print(f"  entities (seed):        {seed_count:,} rows  → PRESERVED")
+        print(f"  sentiment_scores:       {score_count:,} rows  -> will DELETE ALL")
+        print(f"  entities (Discovered):  {discovered_count:,} rows  -> will DELETE")
+        print(f"  entities (seed):        {seed_count:,} rows  -> PRESERVED")
         ner_size = len(json.loads(NER_COUNTS_PATH.read_text())) if NER_COUNTS_PATH.exists() else 0
-        print(f"  ner_candidates.json:    {ner_size:,} candidates  → will WIPE")
+        print(f"  ner_candidates.json:    {ner_size:,} candidates  -> will WIPE")
 
         if args.dry_run:
             print("\n[DRY RUN] No changes made.")
