@@ -113,6 +113,25 @@ def check_db() -> dict:
         conn.close()
 
 
+def check_ner() -> dict:
+    """Check whether the spaCy NER model is available.
+
+    Without it, NLP_AVAILABLE is False in the pipeline and NO new entities are
+    ever discovered — the entity store stays capped at the seed list.
+    """
+    try:
+        import spacy
+    except ImportError:
+        return {"ok": False, "error": "spacy not installed"}
+    try:
+        spacy.load("en_core_web_sm")
+        return {"ok": True}
+    except OSError:
+        return {"ok": False, "error": "model 'en_core_web_sm' not installed"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def check_latency(limit: int = 2000) -> dict:
     """Summarize pipeline latency over the most recent scored rows.
 
@@ -219,6 +238,17 @@ def main():
             print("       (sentiment_pipeline.py runs as standalone process — see instructions)")
     else:
         print(f"  {FAIL} Cannot reach Flink: {flink.get('error', '?')}")
+        all_ok = False
+
+    # ── NER model (entity discovery) ──────────────────────────
+    print("\n[NER] ENTITY DISCOVERY (spaCy model)")
+    ner = check_ner()
+    if ner["ok"]:
+        print(f"  {OK} en_core_web_sm loaded — NER discovery ENABLED (new entities can be found)")
+    else:
+        print(f"  {FAIL} {ner.get('error', '?')} — NER discovery DISABLED")
+        print("       Entity count is capped at the seed list until this is fixed.")
+        print("       Fix: pip install -r requirements.txt  (or: python -m spacy download en_core_web_sm)")
         all_ok = False
 
     # ── Postgres ──────────────────────────────────────────────

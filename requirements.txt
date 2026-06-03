@@ -16,6 +16,12 @@ apache-flink==1.18.1
 
 # NLP / NER
 spacy==3.7.4
+# spaCy English model — REQUIRED for NER entity discovery. Without it
+# spacy.load("en_core_web_sm") fails, NLP_AVAILABLE is False, and the pipeline
+# can only ever track the seed entities (the cause of the "stuck at 94" plateau).
+# Pinned to a 3.7.x model wheel compatible with spacy 3.7.4. If the direct URL
+# is unavailable in your environment, run: python -m spacy download en_core_web_sm
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
 vaderSentiment==3.3.2
 
 # HTTP
