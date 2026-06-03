@@ -74,7 +74,17 @@ def upsert_entity(conn, signal: dict) -> int:
 
 def write_sentiment_score(conn, entity_id: int, signal: dict, llm_result: dict):
     """Insert a sentiment score row."""
-    now = datetime.now(timezone.utc).isoformat()
+    # Key the row on the window's event time, not the write time. Using
+    # datetime.now() here made the (entity_id, timestamp, source) unique index
+    # — and the ON CONFLICT DO NOTHING below — a no-op, because every write got
+    # a fresh microsecond timestamp. Taking the time from the signal means a
+    # reprocessed signal (consumer redelivery, scorer restart, replayed offset)
+    # carries the same timestamp and collides instead of duplicating the point.
+    ts = (
+        signal.get("window_end")
+        or signal.get("computed_at")
+        or datetime.now(timezone.utc).isoformat()
+    )
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -86,7 +96,7 @@ def write_sentiment_score(conn, entity_id: int, signal: dict, llm_result: dict):
             """,
             (
                 entity_id,
-                now,
+                ts,
                 llm_result.get("sentiment", "neutral"),
                 float(llm_result.get("confidence", 0.5)),
                 float(llm_result.get("sentiment_score", 0.0)),

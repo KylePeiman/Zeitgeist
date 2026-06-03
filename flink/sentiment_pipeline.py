@@ -312,19 +312,31 @@ def run():
                     for entity in entities:
                         add_to_buffer(buffer, entity, source, data, now)
 
-                    # NER discovery for messages with no seed-entity match
-                    if not entities and NLP_AVAILABLE:
+                    # NER discovery runs on EVERY message, not only those with no
+                    # seed-entity match. The live YouTube source is seed-driven —
+                    # it searches for each seed entity and always tags the searched
+                    # entity onto every message — so gating discovery on
+                    # `not entities` meant it never fired for the only source
+                    # producing data, capping the entity store at the 94 seeds.
+                    # Running NER unconditionally lets new entities surface from
+                    # text that also happens to mention a seed entity.
+                    if NLP_AVAILABLE:
                         raw_text = (
                             (data.get("text") or "")
                             + " "
                             + (data.get("title") or "")
                         ).strip()
+                        already_matched = set(entities)
                         for hit in discover_entities_ner(raw_text):
                             name = hit["name"]
                             canonical = ALIAS_MAP.get(name.lower())
                             if canonical:
-                                # Already a seed entity — buffer directly under canonical name
-                                add_to_buffer(buffer, canonical, source, data, now)
+                                # Maps to a seed entity — buffer under its canonical
+                                # name unless the alias scan already counted it for
+                                # this message (avoids double-counting mentions).
+                                if canonical not in already_matched:
+                                    add_to_buffer(buffer, canonical, source, data, now)
+                                    already_matched.add(canonical)
                             else:
                                 # New entity — apply promotion threshold to suppress noise
                                 prev = _ner_candidate_counts.get(name, 0)

@@ -9,6 +9,7 @@ google-api-python-client==2.131.0
 
 # News
 newsapi-python==0.2.7
+feedparser==6.0.11   # Google News RSS parsing (news_producer Phase 2)
 
 # Flink
 apache-flink==1.18.1

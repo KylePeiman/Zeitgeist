@@ -18,6 +18,7 @@ import sys
 import urllib.parse
 import requests
 import feedparser
+from collections import deque
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from confluent_kafka import Producer
@@ -42,6 +43,26 @@ HEADERS = {
     "User-Agent": "zeitgeist/1.0 (personal sentiment pipeline; not for commercial use)",
     "Accept": "application/json",
 }
+
+# Bounded cross-cycle de-duplication: an article URL is published at most
+# once even though the same headline keeps surfacing in later poll cycles.
+SEEN_CACHE_MAX = int(os.getenv("SEEN_CACHE_MAX", 20000))
+_seen_urls: set[str] = set()
+_seen_order: deque[str] = deque()
+
+
+def mark_seen(url: str) -> bool:
+    """Record an article URL. Returns True if newly seen, False if duplicate."""
+    if not url:
+        return True
+    if url in _seen_urls:
+        return False
+    _seen_urls.add(url)
+    _seen_order.append(url)
+    if len(_seen_order) > SEEN_CACHE_MAX:
+        evicted = _seen_order.popleft()
+        _seen_urls.discard(evicted)
+    return True
 
 
 # ── KAFKA PRODUCER ────────────────────────────────────────────
@@ -246,13 +267,9 @@ def run():
     logger.info(f"Starting News producer → topic: {KAFKA_TOPIC}")
     logger.info(f"Tracking {len(ENTITIES)} entities | Poll interval: {POLL_INTERVAL_SECONDS}s")
 
-    # Track seen URLs to avoid duplicates within a cycle
-    seen_urls: set[str] = set()
-
     while True:
         cycle += 1
         cycle_messages = 0
-        seen_urls.clear()
         logger.info(f"── Cycle {cycle} starting ──")
 
         # ── PHASE 1: NewsAPI ──────────────────────────────────
@@ -265,9 +282,8 @@ def run():
                 articles = fetch_newsapi_articles(entity_name, NEWS_API_KEY)
                 for article in articles:
                     url = article.get("url", "")
-                    if url in seen_urls:
+                    if not mark_seen(url):
                         continue
-                    seen_urls.add(url)
 
                     msg = build_newsapi_message(article, entity_name)
                     if msg:
@@ -291,9 +307,8 @@ def run():
             entries = fetch_google_news_rss(entity_name)
             for entry in entries:
                 url = getattr(entry, "link", "") or getattr(entry, "id", "")
-                if url in seen_urls:
+                if not mark_seen(url):
                     continue
-                seen_urls.add(url)
 
                 msg = build_rss_message(entry, entity_name)
                 if msg:
