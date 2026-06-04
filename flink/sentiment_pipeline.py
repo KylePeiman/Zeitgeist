@@ -343,6 +343,14 @@ def run():
     signals_emitted = 0
     last_slide_ts = time.time()
 
+    # Newest source-ingest time already credited with an end-to-end latency
+    # sample, per (entity, source). A 5-min window re-emits the same mention
+    # every 30s slide, so without this each mention would log ~10 latency
+    # samples that climb toward the window size (measuring dwell time, not
+    # processing time). We attribute a latency sample only when the window
+    # holds data newer than what we've already scored for that key.
+    last_credited_ingest: dict[tuple, str] = {}
+
     # NER entity promotion: counts persist to disk so they survive restarts.
     _ner_candidate_counts: dict[str, int] = load_ner_counts()
     _ner_save_counter = 0
@@ -427,6 +435,20 @@ def run():
 
                     signal = compute_signal(entity, source, entries)
                     if signal and signal["mention_count"] > 0:
+                        # Credit an end-to-end latency sample only when this
+                        # window holds source data newer than what we've already
+                        # scored for the key. ISO8601 UTC strings sort
+                        # chronologically, so a lexical compare works. Stale
+                        # re-emissions of an aging window send no ingest time,
+                        # so the scorer records NULL latency and the metric
+                        # reflects processing time, not window dwell time.
+                        key = (entity, source)
+                        li = signal.get("latest_ingested_at")
+                        if li and li > last_credited_ingest.get(key, ""):
+                            last_credited_ingest[key] = li
+                        else:
+                            signal["latest_ingested_at"] = None
+
                         producer.produce(
                             OUTPUT_TOPIC,
                             key=f"{entity}:{source}",
@@ -434,6 +456,12 @@ def run():
                             callback=delivery_report,
                         )
                         slide_signals += 1
+
+                # Drop credit markers for keys no longer in the window so the
+                # map can't grow without bound as entities churn.
+                last_credited_ingest = {
+                    k: v for k, v in last_credited_ingest.items() if k in buffer
+                }
 
                 if slide_signals > 0:
                     producer.flush()
