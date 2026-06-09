@@ -15,7 +15,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import Consumer, Producer, KafkaError
 from loguru import logger
 import requests
 
@@ -29,6 +29,7 @@ load_dotenv()
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 LLAMA_SERVER_URL = os.getenv("LLAMA_SERVER_URL", "http://localhost:8080")
 INPUT_TOPIC = "processed.signals"
+OUTPUT_TOPIC = "scored.sentiment"
 
 LLAMA_MAX_TOKENS = 500
 LLAMA_TEMPERATURE = 0.3
@@ -82,8 +83,8 @@ def _parse_iso(ts: str):
         return None
 
 
-def write_sentiment_score(conn, entity_id: int, signal: dict, llm_result: dict):
-    """Insert a sentiment score row."""
+def write_sentiment_score(conn, entity_id: int, signal: dict, llm_result: dict) -> str:
+    """Insert a sentiment score row. Returns the event-time dedupe timestamp used."""
     # Key the row on the window's event time, not the write time. Using
     # datetime.now() here made the (entity_id, timestamp, source) unique index
     # — and the ON CONFLICT DO NOTHING below — a no-op, because every write got
@@ -131,6 +132,7 @@ def write_sentiment_score(conn, entity_id: int, signal: dict, llm_result: dict):
             ),
         )
     conn.commit()
+    return ts
 
 
 # ── PROMPT BUILDER ────────────────────────────────────────────
@@ -262,8 +264,24 @@ def make_consumer() -> Consumer:
     })
 
 
+def make_producer() -> Producer:
+    return Producer({
+        "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
+        "client.id": "zeitgeist-llm-scorer",
+        "acks": "all",
+        "retries": 3,
+    })
+
+
+def delivery_report(err, msg):
+    if err:
+        logger.warning(f"scored.sentiment delivery failed: {err}")
+    else:
+        logger.debug(f"scored.sentiment delivered to {msg.topic()} [{msg.partition()}]")
+
+
 # ── WORKER FUNCTION ───────────────────────────────────────────
-def process_signal(raw_value: bytes, conn, db_lock: threading.Lock) -> str:
+def process_signal(raw_value: bytes, conn, db_lock: threading.Lock, producer: Producer) -> str:
     """Parse, score, and persist one signal. Runs in a worker thread."""
     signal = json.loads(raw_value.decode("utf-8"))
     entity = signal.get("entity", "")
@@ -275,7 +293,45 @@ def process_signal(raw_value: bytes, conn, db_lock: threading.Lock) -> str:
 
     with db_lock:
         entity_id = upsert_entity(conn, signal)
-        write_sentiment_score(conn, entity_id, signal, llm_result)
+        ts = write_sentiment_score(conn, entity_id, signal, llm_result)
+
+    source = signal.get("source", "unknown")
+    message = {
+        "entity": entity,
+        "entity_type": signal.get("entity_type", "unknown"),
+        "category": signal.get("category", "unknown"),
+        "source": source,
+        "sentiment": llm_result["sentiment"],
+        "confidence": float(llm_result["confidence"]),
+        "sentiment_score": float(llm_result["sentiment_score"]),
+        "reasoning": llm_result["reasoning"],
+        "intensity": llm_result["intensity"],
+        "mention_count": signal.get("mention_count", 0),
+        "engagement_score": float(signal.get("engagement_score", 0)),
+        "timestamp": ts,
+        "scored_at": datetime.now(timezone.utc).isoformat(),
+        "method": method,
+    }
+    try:
+        producer.produce(
+            OUTPUT_TOPIC,
+            key=f"{entity}:{source}".encode("utf-8"),
+            value=json.dumps(message).encode("utf-8"),
+            callback=delivery_report,
+        )
+    except BufferError:
+        producer.poll(1)
+        try:
+            producer.produce(
+                OUTPUT_TOPIC,
+                key=f"{entity}:{source}".encode("utf-8"),
+                value=json.dumps(message).encode("utf-8"),
+                callback=delivery_report,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to emit scored.sentiment for '{entity}' after retry: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to emit scored.sentiment for '{entity}': {e}")
 
     return (
         f"[{entity}] {llm_result['sentiment']} "
@@ -293,6 +349,8 @@ def run():
     db_lock = threading.Lock()
     consumer = make_consumer()
     consumer.subscribe([INPUT_TOPIC])
+    producer = make_producer()
+    logger.info(f"Publishing scored results to {OUTPUT_TOPIC}")
 
     # Check LLM availability at startup (informational only — call_llm falls back to VADER per-call)
     try:
@@ -323,6 +381,8 @@ def run():
                     completed += 1
                 futures -= done
 
+                producer.poll(0)
+
                 msg = consumer.poll(timeout=1.0)
                 if msg is None:
                     continue
@@ -331,7 +391,7 @@ def run():
                         logger.warning(f"Kafka error: {msg.error()}")
                     continue
 
-                futures.add(executor.submit(process_signal, msg.value(), conn, db_lock))
+                futures.add(executor.submit(process_signal, msg.value(), conn, db_lock, producer))
                 submitted += 1
 
                 if submitted % 100 == 0:
@@ -340,6 +400,7 @@ def run():
     except KeyboardInterrupt:
         logger.info("Scorer stopped by user")
     finally:
+        producer.flush()
         consumer.close()
         conn.close()
         logger.info(f"Final: submitted={submitted} | completed={completed}")

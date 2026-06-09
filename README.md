@@ -7,7 +7,7 @@
 ```
 [Reddit Producer] ──→ raw.reddit ──┐
 [YouTube Producer] ─→ raw.youtube ─┤→ [Flink] → processed.signals → [LLM Service] → Postgres (Neon) → Streamlit
-[News Producer] ────→ raw.news ────┘
+[News Producer] ────→ raw.news ────┘                                       └→ scored.sentiment (Kafka, for Oracle)
 ```
 
 **Stack:**
@@ -21,8 +21,8 @@
 
 ```
 zeitgeist/
-├── start.ps1                # Start the full pipeline (one command)
-├── stop.ps1                 # Stop everything and tear down Docker
+├── start.ps1 / start.sh     # Start the full pipeline (Windows / macOS-Linux)
+├── stop.ps1 / stop.sh       # Stop everything and tear down Docker
 ├── verify_pipeline.py       # Health check for all components
 ├── docker-compose.yml       # Kafka, Zookeeper, Flink, Kafdrop
 ├── .env.example             # Environment variables template
@@ -73,13 +73,21 @@ pip install -r requirements.txt
 > line must say "ENABLED").
 
 > **After pulling new code:** re-run `pip install -r requirements.txt` and
-> restart the pipeline (`.\stop.ps1` then `.\start.ps1`) — long-running
+> restart the pipeline (`.\stop.ps1` then `.\start.ps1` on Windows, or
+> `./stop.sh` then `./start.sh` on macOS/Linux) — long-running
 > producer/scorer processes do not pick up code or dependency changes until
 > restarted.
 
 ### 4. Start everything
+
+**Windows (PowerShell):**
 ```powershell
 .\start.ps1
+```
+
+**macOS / Linux (bash):**
+```bash
+./start.sh
 ```
 
 This single command:
@@ -95,8 +103,15 @@ python verify_pipeline.py
 ```
 
 ### 6. Stop everything
+
+**Windows (PowerShell):**
 ```powershell
 .\stop.ps1
+```
+
+**macOS / Linux (bash):**
+```bash
+./stop.sh
 ```
 
 Kills all pipeline processes and tears down Docker (including volumes).
@@ -130,7 +145,10 @@ that producer isn't ingesting — check `logs/reddit.log` / `logs/news.log` for
 | `raw.youtube` | Raw YouTube comments and metadata |
 | `raw.news` | Raw news headlines and articles |
 | `processed.signals` | Normalized signals from Flink, ready for scoring |
+| `scored.sentiment` | Scored sentiment results from the LLM Service (consumed by downstream services like Oracle) |
 
 ## LLM Scoring
 
-The scorer defaults to VADER for fast local scoring. If you have [llama.cpp](https://github.com/ggerganov/llama.cpp) running locally at `http://localhost:8080` with a compatible model, it will use that instead for richer sentiment analysis.
+The scorer defaults to VADER for fast local scoring. If you have [llama.cpp](https://github.com/ggerganov/llama.cpp) running locally at `http://localhost:8080`, it will use that instead for richer sentiment analysis.
+
+Start a server with `./scripts/run_llama.sh`. It loads a local GGUF from `../models` and never downloads — place a `qwen2.5-1.5b-instruct-*.gguf` there first. For better quality on an 8 GB machine, add a `qwen2.5-3b-instruct-*.gguf` and run `LLAMA_MODEL=3b ./scripts/run_llama.sh`. Grab files with e.g. `hf download Qwen/Qwen2.5-3B-Instruct-GGUF qwen2.5-3b-instruct-q5_k_m.gguf --local-dir ../models`.
